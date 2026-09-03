@@ -9,16 +9,19 @@ import numpy as np
 from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
 from edgetts_arena.adapters.melotts_adapter import MeloTTSAdapter
 from edgetts_arena.adapters.qwen3_adapter import Qwen3TTSAdapter
+from edgetts_arena.adapters.qwen3_native_adapter import Qwen3NativeTTSAdapter
 from edgetts_arena.core.metrics_collector import MetricsCollector
 from edgetts_arena.utils import write_wav
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an explicit real-model CPU smoke gate.")
-    parser.add_argument("model", choices=("melotts", "cosyvoice", "qwen3"))
+    parser.add_argument("model", choices=("melotts", "cosyvoice", "qwen3", "qwen3-native"))
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--text", required=True)
     parser.add_argument("--voice")
+    parser.add_argument("--language")
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--output", required=True)
@@ -33,6 +36,8 @@ def _adapter(model: str):
         return CosyVoiceTTSAdapter()
     if model == "qwen3":
         return Qwen3TTSAdapter()
+    if model == "qwen3-native":
+        return Qwen3NativeTTSAdapter()
     raise ValueError(f"unknown model gate: {model}")
 
 
@@ -50,6 +55,10 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
         kwargs: dict[str, object] = {"speed": args.speed}
         if voice is not None:
             kwargs["voice"] = voice
+        if args.language is not None:
+            kwargs["language"] = args.language
+        if args.seed is not None:
+            kwargs["seed"] = args.seed
         output, metrics = MetricsCollector().measure_inference(adapter, args.text, **kwargs)
         audio = np.asarray(output.audio, dtype=np.float32).reshape(-1)
         duration_sec = float(audio.size / output.sample_rate)
@@ -70,6 +79,8 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
             "model": args.model,
             "model_path": str(Path(args.model_path).resolve()),
             "voice": voice,
+            "language": args.language,
+            "seed": args.seed,
             "threads": args.threads,
             "speed": args.speed,
             "sample_rate": output.sample_rate,

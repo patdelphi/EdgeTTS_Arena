@@ -1,0 +1,66 @@
+name: Qwen3 Native INT8 CPU Gate
+
+on:
+  push:
+    paths:
+      - ".github/model-gates/qwen3-native.trigger"
+  workflow_dispatch:
+
+jobs:
+  qwen3-native-int8-cpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Arena and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libopenblas-dev
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install "huggingface_hub>=0.34"
+      - name: Build pinned native Qwen3 runtime
+        run: |
+          mkdir -p runtime
+          git clone https://github.com/gabriele-mastrapasqua/qwen3-tts.git runtime/qwen3-tts-c
+          git -C runtime/qwen3-tts-c checkout e56ec7e6eabbed608b13bfbd3fba431708b2077f
+          make -C runtime/qwen3-tts-c blas
+          runtime/qwen3-tts-c/qwen_tts --caps
+          runtime/qwen3-tts-c/qwen_tts --self-test
+      - name: Prepare pinned official 0.6B CustomVoice model
+        run: |
+          python scripts/prepare_qwen3_model.py \
+            --revision f3d1af06e4eaefac12b1ffa6726f9eef674a6f02 \
+            --output models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
+      - name: Create native INT8 manifest
+        run: |
+          python scripts/prepare_qwen3_native_manifest.py \
+            --binary runtime/qwen3-tts-c/qwen_tts \
+            --model-dir models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+            --runtime-revision e56ec7e6eabbed608b13bfbd3fba431708b2077f \
+            --quantization int8 \
+            --default-voice Vivian \
+            --default-language Chinese \
+            --output models/qwen3-native/int8/model.json
+      - name: Real Qwen3 native INT8 CPU synthesis
+        run: |
+          mkdir -p exports/extended-gates
+          python scripts/real_model_smoke.py qwen3-native \
+            --model-path models/qwen3-native/int8/model.json \
+            --voice Vivian \
+            --language zh \
+            --seed 42 \
+            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 native INT8 CPU 验证语音。" \
+            --threads 4 \
+            --output exports/extended-gates/qwen3-native-int8.wav \
+            --report exports/extended-gates/qwen3-native-int8.json
+          test -s exports/extended-gates/qwen3-native-int8.wav
+          test -s exports/extended-gates/qwen3-native-int8.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-native-int8-cpu-smoke
+          path: exports/extended-gates/
