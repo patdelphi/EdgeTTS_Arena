@@ -34,7 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" "torchaudio==2.8.0"
-          python -m pip install "git+https://github.com/myshell-ai/MeloTTS.git@209145371cff8fc3bd60d7be902ea69cbdb7965a"
+          python -m pip install "git+https://github.com/myshell-ai/MeloTTS.git@209145371cff8fc3bd60d7be902ea69cbdb7965a" huggingface_hub
       - name: Prepare UniDic dictionary
         run: |
           python -m unidic download
@@ -44,30 +44,12 @@ jobs:
           assert parsed
           print(parsed.splitlines()[0])
           PY
-      - name: Prepare NLTK G2P resources
+      - name: Prepare pinned MeloTTS assets
         run: |
-          python - <<'PY'
-          import nltk
-          from nltk import pos_tag
-          for package in ("averaged_perceptron_tagger", "averaged_perceptron_tagger_eng", "cmudict"):
-              if not nltk.download(package, quiet=True):
-                  raise RuntimeError(f"failed to download NLTK resource: {package}")
-          tagged = pos_tag(["EdgeTTS", "Arena"])
-          assert tagged and len(tagged) == 2
-          print(tagged)
-          PY
-      - name: Prepare Chinese model files
-        run: |
-          mkdir -p models/melotts/zh exports/extended-gates
-          python - <<'PY'
-          from huggingface_hub import hf_hub_download
-          revision = "082ca057e44f1e52ec47e1622a30286019e8a3ef"
-          for filename in ("config.json", "checkpoint.pth"):
-              hf_hub_download(repo_id="myshell-ai/MeloTTS-Chinese", filename=filename, revision=revision, local_dir="models/melotts/zh")
-          PY
-          cat > models/melotts/zh/model.json <<'JSON'
-          {"language":"ZH","config_path":"config.json","ckpt_path":"checkpoint.pth"}
-          JSON
+          mkdir -p exports/extended-gates
+          python scripts/prepare_melotts_assets.py --output models/melotts/zh
+          test -s models/melotts/zh/model.json
+          test -s models/melotts/zh/asset_manifest.json
       - name: Real MeloTTS CPU synthesis
         run: |
           python scripts/real_model_smoke.py melotts \
@@ -81,7 +63,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: melotts-cpu-smoke
-          path: exports/extended-gates/
+          path: |
+            exports/extended-gates/
+            models/melotts/zh/asset_manifest.json
 
   cosyvoice-cpu-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'cosyvoice' || inputs.model == 'both' || inputs.model == 'all') }}
