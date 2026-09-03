@@ -20,9 +20,20 @@ class APIEnvelope(BaseModel):
 
 class BenchmarkConfig(BaseModel):
     voice: str | None = None
+    language: str | None = Field(default=None, min_length=2, max_length=32)
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
     seed: int | None = None
     sample_rate: int | None = Field(default=None, ge=8_000, le=192_000)
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("language must not be blank")
+        return normalized
 
 
 class BenchmarkRunRequest(BaseModel):

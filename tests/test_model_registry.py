@@ -22,6 +22,7 @@ def test_registry_list_exposes_capabilities() -> None:
     dummy = next(item for item in registry.list_models() if item["id"] == "dummy")
     assert dummy["status"] == "unloaded"
     assert dummy["capabilities"]["streaming"] is True
+    assert dummy["capabilities"]["language_control"] is False
     assert "default" in dummy["voices"]
     assert dummy["worker_mode"] == "in_process"
 
@@ -30,11 +31,22 @@ def test_registry_keeps_qwen3_experimental_disabled() -> None:
     registry = ModelRegistry.from_yaml("config/models_config.yaml")
     record = registry.get_record("qwen3-tts-0.6b")
     assert record.spec.experimental is True
+    assert record.spec.language_control is True
     assert record.status == ModelStatus.UNAVAILABLE
     item = next(item for item in registry.list_models() if item["id"] == "qwen3-tts-0.6b")
     assert item["experimental"] is True
     assert item["status"] == "unavailable"
     assert item["capabilities"]["voice_clone"] is False
+    assert item["capabilities"]["language_control"] is True
+
+
+def test_registry_uses_two_threads_as_native_qwen_baseline() -> None:
+    registry = ModelRegistry.from_yaml("config/models_config.yaml")
+    record = registry.get_record("qwen3-tts-0.6b-native-int8")
+    assert record.spec.num_threads == 2
+    assert record.spec.language_control is True
+    item = registry.model_info("qwen3-tts-0.6b-native-int8")
+    assert item["capabilities"]["language_control"] is True
 
 
 def test_registry_reads_dedicated_worker_python(tmp_path: Path) -> None:

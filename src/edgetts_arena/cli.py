@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     suite.add_argument("--warmup-runs", type=int, default=None)
     suite.add_argument("--measured-runs", type=int, default=None)
     suite.add_argument("--threads", type=int, default=4)
+    suite.add_argument(
+        "--language",
+        default=None,
+        help="explicit language code for models with language_control capability (for example zh/en/ja)",
+    )
     suite.add_argument("--exports-root", type=Path, default=Path("exports"))
 
     serve = subparsers.add_parser("serve", help="start the local FastAPI service")
@@ -305,7 +310,13 @@ def main() -> int:
             cpu_threads_per_model=args.threads,
             warmup_runs=args.warmup_runs,
             measured_runs=args.measured_runs,
-            config={"speed": 1.0, "voice": None, "seed": None, "sample_rate": None},
+            config={
+                "speed": 1.0,
+                "voice": None,
+                "language": None if args.language is None else args.language.strip().lower(),
+                "seed": None,
+                "sample_rate": None,
+            },
         )
         export_path = store.build_export(data["run_id"])
         print(f"{data['run_id']}\t{export_path}")

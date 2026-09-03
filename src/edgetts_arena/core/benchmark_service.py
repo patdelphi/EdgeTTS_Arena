@@ -337,6 +337,26 @@ class BenchmarkService:
                 )
             kwargs["voice"] = voice
 
+        language = config.get("language")
+        if language is not None:
+            normalized_language = str(language).strip().lower()
+            if not normalized_language:
+                raise ArenaError(1001, "language must not be blank", error_type="validation_error")
+            if not bool(capabilities.get("language_control", False)):
+                raise ArenaError(
+                    1003,
+                    f"model '{model_id}' does not support explicit language control",
+                    error_type="capability_conflict",
+                )
+            languages = [str(item).strip().lower() for item in capabilities.get("languages") or []]
+            if languages and normalized_language not in languages:
+                raise ArenaError(
+                    1003,
+                    f"language '{normalized_language}' is not available for model '{model_id}'",
+                    error_type="capability_conflict",
+                )
+            kwargs["language"] = normalized_language
+
         seed = config.get("seed")
         if seed is not None:
             if bool(capabilities.get("seed", False)):
