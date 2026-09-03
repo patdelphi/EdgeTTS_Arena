@@ -26,6 +26,44 @@ jobs:
       - name: CLI smoke test
         run: python -m edgetts_arena dummy --text "CI smoke test" --output exports/ci-dummy.wav
 
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          test -n "$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+      - name: Install wheel into clean venv
+        run: |
+          python -m venv /tmp/edgetts-arena-wheel
+          /tmp/edgetts-arena-wheel/bin/python -m pip install --upgrade pip
+          /tmp/edgetts-arena-wheel/bin/python -m pip install $(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)
+      - name: Wheel smoke from empty working directory
+        run: |
+          mkdir -p /tmp/edgetts-arena-wheel-smoke
+          cd /tmp/edgetts-arena-wheel-smoke
+          /tmp/edgetts-arena-wheel/bin/edgetts-arena doctor --exports-root exports/doctor
+          /tmp/edgetts-arena-wheel/bin/edgetts-arena dummy --text "wheel install smoke" --output exports/wheel.wav
+          /tmp/edgetts-arena-wheel/bin/python - <<'PY'
+          from edgetts_arena.api import create_app
+          from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite
+          from edgetts_arena.core.model_registry import ModelRegistry
+          app = create_app(exports_root='exports/api')
+          paths = {route.path for route in app.routes}
+          assert '/healthz' in paths
+          assert '/api/v1/benchmark/presets' in paths
+          assert 'dummy' in ModelRegistry.from_yaml().ids()
+          assert BenchmarkPresetSuite.load().version == '1.0'
+          PY
+          test -s exports/wheel.wav
+
   cross-platform-smoke:
     strategy:
       fail-fast: false
