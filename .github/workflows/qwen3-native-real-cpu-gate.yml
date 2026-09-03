@@ -1,4 +1,4 @@
-name: Qwen3 Native INT8 CPU Gate
+name: Qwen3 Native Quant CPU Gate
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  qwen3-native-int8-cpu-smoke:
+  qwen3-native-quant-cpu-bench:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -36,31 +36,57 @@ jobs:
           python scripts/prepare_qwen3_model.py \
             --revision f3d1af06e4eaefac12b1ffa6726f9eef674a6f02 \
             --output models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
-      - name: Create native INT8 manifest
+      - name: Create INT8 and INT4 manifests
         run: |
           python scripts/prepare_qwen3_native_manifest.py \
             --binary runtime/qwen3-tts-c/qwen_tts \
             --model-dir models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
             --runtime-revision e56ec7e6eabbed608b13bfbd3fba431708b2077f \
-            --quantization int8 \
-            --default-voice Vivian \
-            --default-language Chinese \
+            --quantization int8 --default-voice Vivian --default-language Chinese \
             --output models/qwen3-native/int8/model.json
-      - name: Real Qwen3 native INT8 CPU synthesis
+          python scripts/prepare_qwen3_native_manifest.py \
+            --binary runtime/qwen3-tts-c/qwen_tts \
+            --model-dir models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+            --runtime-revision e56ec7e6eabbed608b13bfbd3fba431708b2077f \
+            --quantization int4 --default-voice Vivian --default-language Chinese \
+            --output models/qwen3-native/int4/model.json
+      - name: Native INT8 2-thread baseline
         run: |
           mkdir -p exports/extended-gates
           python scripts/real_model_smoke.py qwen3-native \
             --model-path models/qwen3-native/int8/model.json \
-            --voice Vivian \
-            --language zh \
-            --seed 42 \
-            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 native INT8 CPU 验证语音。" \
+            --voice Vivian --language zh --seed 42 \
+            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 native 量化 CPU 对照语音。" \
+            --threads 2 \
+            --output exports/extended-gates/qwen3-native-int8-2t.wav \
+            --report exports/extended-gates/qwen3-native-int8-2t.json
+      - name: Native INT8 4-thread baseline
+        run: |
+          python scripts/real_model_smoke.py qwen3-native \
+            --model-path models/qwen3-native/int8/model.json \
+            --voice Vivian --language zh --seed 42 \
+            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 native 量化 CPU 对照语音。" \
             --threads 4 \
-            --output exports/extended-gates/qwen3-native-int8.wav \
-            --report exports/extended-gates/qwen3-native-int8.json
-          test -s exports/extended-gates/qwen3-native-int8.wav
-          test -s exports/extended-gates/qwen3-native-int8.json
+            --output exports/extended-gates/qwen3-native-int8-4t.wav \
+            --report exports/extended-gates/qwen3-native-int8-4t.json
+      - name: Native INT4 4-thread candidate
+        run: |
+          python scripts/real_model_smoke.py qwen3-native \
+            --model-path models/qwen3-native/int4/model.json \
+            --voice Vivian --language zh --seed 42 \
+            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 native 量化 CPU 对照语音。" \
+            --threads 4 \
+            --output exports/extended-gates/qwen3-native-int4-4t.wav \
+            --report exports/extended-gates/qwen3-native-int4-4t.json
+      - name: Verify benchmark artifacts
+        run: |
+          for f in \
+            qwen3-native-int8-2t.wav qwen3-native-int8-2t.json \
+            qwen3-native-int8-4t.wav qwen3-native-int8-4t.json \
+            qwen3-native-int4-4t.wav qwen3-native-int4-4t.json; do
+            test -s "exports/extended-gates/$f"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: qwen3-native-int8-cpu-smoke
+          name: qwen3-native-quant-cpu-bench
           path: exports/extended-gates/
