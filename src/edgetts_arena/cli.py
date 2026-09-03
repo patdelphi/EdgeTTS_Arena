@@ -28,6 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also validate configured dedicated Python worker interpreters",
     )
+    doctor.add_argument(
+        "--worker",
+        dest="worker_models",
+        action="append",
+        default=None,
+        metavar="MODEL_ID",
+        help="limit worker validation to a model id; repeatable and implies --workers",
+    )
     doctor.add_argument("--exports-root", type=Path, default=Path("exports"))
 
     dummy = subparsers.add_parser("dummy", help="generate a deterministic dummy WAV")
@@ -75,11 +83,15 @@ def collect_doctor_report(
     exports_root: Path,
     check_ui: bool = False,
     check_workers: bool = False,
+    worker_model_ids: list[str] | None = None,
 ) -> dict[str, object]:
     checks: list[dict[str, object]] = []
 
     def record(name: str, ok: bool, detail: str) -> None:
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    selected_worker_ids = list(dict.fromkeys(worker_model_ids or []))
+    check_workers = bool(check_workers or selected_worker_ids)
 
     py_ok = (3, 10) <= sys.version_info[:2] < (3, 13)
     record("python", py_ok, platform.python_version())
@@ -138,14 +150,34 @@ def collect_doctor_report(
         try:
             registry = ModelRegistry.from_yaml()
             runner = ProcessRunner()
-            worker_specs = [
-                registry.get_record(model_id).spec
+            all_worker_specs = {
+                model_id: registry.get_record(model_id).spec
                 for model_id in registry.ids()
                 if registry.get_record(model_id).spec.worker_python
                 or registry.get_record(model_id).spec.worker_python_env
-            ]
-            if not worker_specs:
+            }
+            worker_specs = []
+            if selected_worker_ids:
+                known_ids = set(registry.ids())
+                for model_id in selected_worker_ids:
+                    if model_id not in known_ids:
+                        record(f"worker:{model_id}", False, "unknown model id")
+                        continue
+                    spec = all_worker_specs.get(model_id)
+                    if spec is None:
+                        record(
+                            f"worker:{model_id}",
+                            False,
+                            "model does not declare a dedicated worker interpreter",
+                        )
+                        continue
+                    worker_specs.append(spec)
+            else:
+                worker_specs = list(all_worker_specs.values())
+
+            if not worker_specs and not selected_worker_ids:
                 record("external_workers", True, "no dedicated worker interpreters configured")
+
             for spec in worker_specs:
                 executable = spec.resolve_worker_python()
                 check_name = f"worker:{spec.id}"
@@ -198,6 +230,7 @@ def collect_doctor_report(
         "platform": platform.platform(),
         "ui_requested": check_ui,
         "workers_requested": check_workers,
+        "worker_models_requested": selected_worker_ids,
         "checks": checks,
     }
 
@@ -212,6 +245,7 @@ def main() -> int:
             exports_root=args.exports_root,
             check_ui=args.ui,
             check_workers=args.workers,
+            worker_model_ids=args.worker_models,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ready"] else 1
