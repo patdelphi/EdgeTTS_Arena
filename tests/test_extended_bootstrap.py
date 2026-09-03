@@ -48,7 +48,9 @@ def test_melotts_bootstrap_plan_reuses_gate_pins(tmp_path: Path) -> None:
     assert any("MeloTTS.git@209145371cff8fc3bd60d7be902ea69cbdb7965a" in item for command in commands for item in command)
     assert any(MELO_MODEL_REVISION in command for command in commands)
     assert any(command[-2:] == ["unidic", "download"] for command in commands)
-    assert plan.environment["EDGETTS_ARENA_MELOTTS_PYTHON"].endswith(".venv-melotts/bin/python")
+    worker_python = Path(plan.environment["EDGETTS_ARENA_MELOTTS_PYTHON"])
+    assert worker_python.parent.parent == tmp_path / ".venv-melotts"
+    assert worker_python.name in {"python", "python.exe"}
 
 
 def test_cosyvoice_bootstrap_plan_exports_runtime_paths(tmp_path: Path) -> None:
