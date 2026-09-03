@@ -49,6 +49,16 @@ models:
     experimental: true
     language_control: true
 
+  - id: qwen3-tts-0.6b-native-int4
+    name: Qwen3-TTS 0.6B Native INT4
+    enabled: false
+    adapter: qwen3_native
+    model_path: ./models/qwen3-native/int4/model.json
+    keep_in_memory: false
+    num_threads: 4
+    experimental: true
+    language_control: true
+
   - id: cosyvoice-300m-sft
     name: CosyVoice 300M SFT
     enabled: false

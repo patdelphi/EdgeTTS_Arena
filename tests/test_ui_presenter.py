@@ -22,7 +22,7 @@ def _models():
                 "voices": True,
                 "voice_clone": False,
                 "language_control": True,
-                "languages": ["en"],
+                "languages": ["en", "zh"],
             },
         },
         {
@@ -51,7 +51,7 @@ def test_capability_view_is_selection_driven() -> None:
     assert single["voice_enabled"] is True
     assert single["voices"] == ["default", "alt"]
     assert single["language_enabled"] is True
-    assert single["languages"] == ["en"]
+    assert single["languages"] == ["en", "zh"]
     assert single["streaming_enabled"] is True
 
     multi = capability_view(_models(), ["a", "b"])
@@ -60,8 +60,30 @@ def test_capability_view_is_selection_driven() -> None:
     assert multi["seed_partial"] is True
     assert multi["voice_enabled"] is False
     assert multi["language_enabled"] is False
-    assert multi["languages"] == []
     assert multi["streaming_enabled"] is False
+
+
+def test_capability_view_enables_shared_controls_for_quant_variants() -> None:
+    common_caps = {
+        "streaming": False,
+        "seed": True,
+        "speed": False,
+        "voices": True,
+        "voice_clone": False,
+        "language_control": True,
+        "languages": ["zh", "en", "ja"],
+    }
+    models = [
+        {"id": "int8", "status": "unloaded", "voices": ["Vivian", "Ryan"], "capabilities": common_caps},
+        {"id": "int4", "status": "unloaded", "voices": ["Vivian", "Sohee"], "capabilities": common_caps},
+    ]
+    view = capability_view(models, ["int8", "int4"])
+    assert view["voice_enabled"] is True
+    assert view["voices"] == ["Vivian"]
+    assert view["language_enabled"] is True
+    assert view["languages"] == ["zh", "en", "ja"]
+    assert view["seed_enabled"] is True
+    assert view["seed_partial"] is False
 
 
 def test_model_status_and_choices_include_runtime_state() -> None:

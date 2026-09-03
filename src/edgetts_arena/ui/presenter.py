@@ -39,6 +39,15 @@ def status_rows(models: list[dict[str, Any]]) -> list[list[Any]]:
     return rows
 
 
+def _common_values(groups: list[list[str]]) -> list[str]:
+    if not groups or any(not group for group in groups):
+        return []
+    common = set(groups[0])
+    for group in groups[1:]:
+        common.intersection_update(group)
+    return [value for value in groups[0] if value in common]
+
+
 def capability_view(
     models: list[dict[str, Any]], selected_ids: list[str] | None
 ) -> dict[str, Any]:
@@ -66,27 +75,32 @@ def capability_view(
     streaming_enabled = len(selected) == 1 and bool(caps[0].get("streaming"))
 
     voices: list[str] = []
-    voice_enabled = False
-    if len(selected) == 1 and bool(caps[0].get("voices")):
-        voices = [str(value) for value in selected[0].get("voices") or []]
-        voice_enabled = bool(voices)
+    if all(bool(cap.get("voices")) for cap in caps):
+        voices = _common_values(
+            [[str(value) for value in item.get("voices") or []] for item in selected]
+        )
+    voice_enabled = bool(voices)
 
     languages: list[str] = []
-    language_enabled = False
-    if len(selected) == 1 and bool(caps[0].get("language_control")):
-        languages = [str(value) for value in caps[0].get("languages") or []]
-        language_enabled = bool(languages)
+    if all(bool(cap.get("language_control")) for cap in caps):
+        languages = _common_values(
+            [[str(value) for value in cap.get("languages") or []] for cap in caps]
+        )
+    language_enabled = bool(languages)
 
     unavailable = [str(item["id"]) for item in selected if item.get("status") == "unavailable"]
     lines = [
         f"Selected: **{len(selected)}** model(s)",
         f"Speed control: **{'enabled' if speed_enabled else 'disabled'}**",
         "Seed: **partial support**" if seed_partial else f"Seed: **{'enabled' if seed_enabled else 'disabled'}**",
-        f"Language control: **{'enabled' if language_enabled else 'disabled'}**",
+        f"Shared voice control: **{'enabled' if voice_enabled else 'disabled'}**",
+        f"Shared language control: **{'enabled' if language_enabled else 'disabled'}**",
         f"Streaming preview capable: **{'yes' if streaming_enabled else 'no'}**",
     ]
-    if len(selected) > 1:
-        lines.append("Voice/language controls use model defaults in multi-model Arena mode.")
+    if len(selected) > 1 and not voice_enabled:
+        lines.append("No common selectable voice; each model will use its default voice.")
+    if len(selected) > 1 and not language_enabled:
+        lines.append("No common explicit language; each model will use its default language.")
     if unavailable:
         lines.append("Unavailable: " + ", ".join(unavailable))
     return {

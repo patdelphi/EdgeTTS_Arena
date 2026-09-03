@@ -12,7 +12,6 @@ def test_registry_reads_config_and_lazy_loads_dummy() -> None:
     adapter = registry.load("dummy")
     assert adapter.id == "dummy"
     assert registry.get_record("dummy").status == ModelStatus.READY
-
     registry.unload("dummy")
     assert registry.get_record("dummy").status == ModelStatus.UNLOADED
 
@@ -27,26 +26,22 @@ def test_registry_list_exposes_capabilities() -> None:
     assert dummy["worker_mode"] == "in_process"
 
 
-def test_registry_keeps_qwen3_experimental_disabled() -> None:
+def test_registry_keeps_qwen_variants_experimental_disabled() -> None:
     registry = ModelRegistry.from_yaml("config/models_config.yaml")
-    record = registry.get_record("qwen3-tts-0.6b")
-    assert record.spec.experimental is True
-    assert record.spec.language_control is True
-    assert record.status == ModelStatus.UNAVAILABLE
-    item = next(item for item in registry.list_models() if item["id"] == "qwen3-tts-0.6b")
-    assert item["experimental"] is True
-    assert item["status"] == "unavailable"
-    assert item["capabilities"]["voice_clone"] is False
-    assert item["capabilities"]["language_control"] is True
-
-
-def test_registry_uses_two_threads_as_native_qwen_baseline() -> None:
-    registry = ModelRegistry.from_yaml("config/models_config.yaml")
-    record = registry.get_record("qwen3-tts-0.6b-native-int8")
-    assert record.spec.num_threads == 2
-    assert record.spec.language_control is True
-    item = registry.model_info("qwen3-tts-0.6b-native-int8")
-    assert item["capabilities"]["language_control"] is True
+    expected_threads = {
+        "qwen3-tts-0.6b": 4,
+        "qwen3-tts-0.6b-native-int8": 2,
+        "qwen3-tts-0.6b-native-int4": 4,
+    }
+    for model_id, threads in expected_threads.items():
+        record = registry.get_record(model_id)
+        assert record.spec.experimental is True
+        assert record.spec.language_control is True
+        assert record.spec.num_threads == threads
+        assert record.status == ModelStatus.UNAVAILABLE
+        item = registry.model_info(model_id)
+        assert item["experimental"] is True
+        assert item["capabilities"]["language_control"] is True
 
 
 def test_registry_reads_dedicated_worker_python(tmp_path: Path) -> None:
