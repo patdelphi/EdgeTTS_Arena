@@ -87,3 +87,27 @@ def test_result_presenter_shows_non_streaming_ttfb_as_na() -> None:
     assert "N/A (non-streaming)" in card
     rows = comparison_rows([result], {"a": "Model A"})
     assert rows[0][8] == "N/A"
+
+
+def test_suite_result_rows_uses_aggregate_statistics() -> None:
+    from edgetts_arena.ui.presenter import suite_result_rows
+
+    rows = suite_result_rows(
+        [
+            {
+                "case_id": "TC-01",
+                "model_id": "dummy",
+                "status": "success",
+                "successful_runs": 3,
+                "measured_runs": 3,
+                "aggregate": {
+                    "inference_time_ms": {"mean": 10.0},
+                    "rtf": {"mean": 0.2, "p95": 0.25},
+                    "peak_rss_mb": {"mean": 100.0},
+                    "avg_cpu_usage_pct": {"mean": 35.0},
+                },
+            }
+        ],
+        {"dummy": "Dummy"},
+    )
+    assert rows == [["TC-01", "Dummy", "success", "3/3", 10.0, 0.2, 0.25, 100.0, 35.0]]

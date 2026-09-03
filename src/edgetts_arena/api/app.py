@@ -13,9 +13,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
-from edgetts_arena.api.schemas import APIEnvelope, BenchmarkRunRequest, StreamingStart
+from edgetts_arena.api.schemas import APIEnvelope, BenchmarkRunRequest, BenchmarkSuiteRunRequest, StreamingStart
 from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.benchmark_service import BenchmarkService
+from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBenchmarkService
 from edgetts_arena.core.config import AppSettings, load_settings
 from edgetts_arena.core.errors import ArenaError
 from edgetts_arena.core.model_registry import ModelRegistry, ModelStatus
@@ -67,6 +68,10 @@ def create_app(
     artifact_store = RunArtifactStore(exports_root)
     resource_guard = ResourceGuard(settings.resource_guard)
     benchmark_service = BenchmarkService(registry, resource_guard, artifact_store)
+    preset_suite = BenchmarkPresetSuite.load()
+    repeated_benchmark_service = RepeatedBenchmarkService(
+        registry, resource_guard, artifact_store, preset_suite=preset_suite
+    )
 
     app = FastAPI(
         title="EdgeTTS-Arena API",
@@ -78,6 +83,8 @@ def create_app(
     app.state.registry = registry
     app.state.artifact_store = artifact_store
     app.state.benchmark_service = benchmark_service
+    app.state.benchmark_preset_suite = preset_suite
+    app.state.repeated_benchmark_service = repeated_benchmark_service
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
@@ -126,6 +133,32 @@ def create_app(
             model_ids=payload.models,
             execution_mode=payload.execution_mode,
             cpu_threads_per_model=payload.cpu_threads_per_model,
+            config=payload.config.model_dump(),
+        )
+        return _success(data)
+
+    @app.get("/api/v1/benchmark/presets", response_model=APIEnvelope)
+    async def benchmark_presets() -> dict[str, Any]:
+        return _success(
+            {
+                "version": preset_suite.version,
+                "defaults": {
+                    "warmup_runs": preset_suite.warmup_runs,
+                    "measured_runs": preset_suite.measured_runs,
+                },
+                "cases": [case.to_dict() for case in preset_suite.cases],
+            }
+        )
+
+    @app.post("/api/v1/benchmark/suite", response_model=APIEnvelope)
+    async def benchmark_suite_run(payload: BenchmarkSuiteRunRequest) -> dict[str, Any]:
+        data = await asyncio.to_thread(
+            repeated_benchmark_service.run_suite,
+            model_ids=payload.models,
+            case_ids=payload.case_ids,
+            cpu_threads_per_model=payload.cpu_threads_per_model,
+            warmup_runs=payload.warmup_runs,
+            measured_runs=payload.measured_runs,
             config=payload.config.model_dump(),
         )
         return _success(data)

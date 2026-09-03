@@ -53,6 +53,37 @@ class BenchmarkRunRequest(BaseModel):
         return normalized
 
 
+class BenchmarkSuiteRunRequest(BaseModel):
+    models: list[str] = Field(min_length=1, max_length=4)
+    case_ids: list[str] | None = Field(default=None, min_length=1, max_length=5)
+    cpu_threads_per_model: int = Field(default=4, ge=1, le=64)
+    warmup_runs: int | None = Field(default=None, ge=0, le=10)
+    measured_runs: int | None = Field(default=None, ge=1, le=20)
+    config: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
+
+    @field_validator("models")
+    @classmethod
+    def unique_suite_models(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("model ids must not be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("model ids must be unique")
+        return normalized
+
+    @field_validator("case_ids")
+    @classmethod
+    def unique_case_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("case ids must not be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("case ids must be unique")
+        return normalized
+
+
 class StreamingStart(BaseModel):
     action: Literal["start"]
     text: str = Field(min_length=1, max_length=1000)

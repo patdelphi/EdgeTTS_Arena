@@ -60,7 +60,7 @@ class BenchmarkService:
         config = dict(config or {})
         run_id = new_run_id()
         started_at = utc_now()
-        environment = collect_system_environment()
+        environment = collect_system_environment(cpu_threads_per_model=threads)
         self.artifact_store.create_run(run_id)
 
         if execution_mode == "sequential":

@@ -4,7 +4,11 @@ import argparse
 from pathlib import Path
 
 from edgetts_arena.adapters import DummyTTSAdapter, KokoroTTSAdapter, PiperTTSAdapter
+from edgetts_arena.core.artifacts import RunArtifactStore
+from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBenchmarkService
 from edgetts_arena.core.config import load_settings
+from edgetts_arena.core.model_registry import ModelRegistry
+from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.logging import configure_logging
 from edgetts_arena.utils import write_wav
 
@@ -36,6 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     kokoro.add_argument("--speed", type=float, default=1.0, help="speech speed multiplier (0.5-2.0)")
     kokoro.add_argument("--threads", type=int, default=4)
     kokoro.add_argument("--output", type=Path, default=Path("exports/kokoro.wav"))
+
+    suite = subparsers.add_parser("suite", help="run the standard repeated benchmark suite")
+    suite.add_argument("--models", nargs="+", required=True, help="1-4 configured model ids")
+    suite.add_argument("--cases", nargs="+", default=None, help="case ids; defaults to TC-01..TC-05")
+    suite.add_argument("--warmup-runs", type=int, default=None)
+    suite.add_argument("--measured-runs", type=int, default=None)
+    suite.add_argument("--threads", type=int, default=4)
+    suite.add_argument("--exports-root", type=Path, default=Path("exports"))
 
     serve = subparsers.add_parser("serve", help="start the local FastAPI service")
     serve.add_argument("--host", default=None, help="bind host; defaults to app config")
@@ -87,6 +99,27 @@ def main() -> int:
         )
         path = write_wav(args.output, output.audio, output.sample_rate)
         print(path)
+        return 0
+
+    if args.command == "suite":
+        registry = ModelRegistry.from_yaml()
+        store = RunArtifactStore(args.exports_root)
+        service = RepeatedBenchmarkService(
+            registry,
+            ResourceGuard(settings.resource_guard),
+            store,
+            preset_suite=BenchmarkPresetSuite.load(),
+        )
+        data = service.run_suite(
+            model_ids=list(args.models),
+            case_ids=None if args.cases is None else list(args.cases),
+            cpu_threads_per_model=args.threads,
+            warmup_runs=args.warmup_runs,
+            measured_runs=args.measured_runs,
+            config={"speed": 1.0, "voice": None, "seed": None, "sample_rate": None},
+        )
+        export_path = store.build_export(data["run_id"])
+        print(f"{data['run_id']}\t{export_path}")
         return 0
 
     if args.command == "serve":

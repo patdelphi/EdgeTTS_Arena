@@ -171,3 +171,32 @@ def _number(value: Any) -> float | None:
         return round(float(value), 3)
     except (TypeError, ValueError):
         return None
+
+
+def suite_result_rows(
+    results: list[dict[str, Any]],
+    model_names: dict[str, str] | None = None,
+) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for result in results:
+        model_id = str(result.get("model_id") or "unknown")
+        display = (model_names or {}).get(model_id, model_id)
+        aggregate = result.get("aggregate") or {}
+        inference = aggregate.get("inference_time_ms") or {}
+        rtf = aggregate.get("rtf") or {}
+        rss = aggregate.get("peak_rss_mb") or {}
+        cpu = aggregate.get("avg_cpu_usage_pct") or {}
+        rows.append(
+            [
+                result.get("case_id", "unknown"),
+                display,
+                result.get("status", "unknown"),
+                f"{result.get('successful_runs', 0)}/{result.get('measured_runs', 0)}",
+                _number(inference.get("mean")),
+                _number(rtf.get("mean")),
+                _number(rtf.get("p95")),
+                _number(rss.get("mean")),
+                _number(cpu.get("mean")),
+            ]
+        )
+    return rows

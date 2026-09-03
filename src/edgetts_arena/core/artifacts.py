@@ -76,11 +76,15 @@ class RunArtifactStore:
         return zip_path
 
     @staticmethod
-    def safe_model_filename(model_id: str) -> str:
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", model_id).strip("._")
+    def safe_audio_filename(stem: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
         if not safe:
-            safe = "model"
+            safe = "audio"
         return f"{safe}.wav"
+
+    @staticmethod
+    def safe_model_filename(model_id: str) -> str:
+        return RunArtifactStore.safe_audio_filename(model_id)
 
     def _assert_within_root(self, path: Path) -> None:
         self._assert_within(path, self.root)
