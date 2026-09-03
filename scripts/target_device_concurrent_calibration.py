@@ -3,9 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import zipfile
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from scripts.acceptance_artifacts import prepare_output_dir, write_zip
+except ModuleNotFoundError:  # direct: python scripts/target_device_concurrent_calibration.py
+    from acceptance_artifacts import prepare_output_dir, write_zip
 
 from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.benchmark_service import BenchmarkService
@@ -45,13 +49,6 @@ def _result_map(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _write_zip(root: Path, archive: Path) -> None:
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                bundle.write(path, path.relative_to(root))
-
-
 def _check(name: str, ok: bool, detail: str) -> dict[str, object]:
     return {"name": name, "ok": bool(ok), "detail": detail}
 
@@ -85,9 +82,10 @@ def run_calibration(
         if value is not None and value <= 0:
             raise ValueError(f"{name} must be positive")
 
-    root = Path(args.output_dir).expanduser().resolve()
+    root, archive = prepare_output_dir(
+        Path(args.output_dir), overwrite=bool(getattr(args, "overwrite", False))
+    )
     run_root = root / "runs"
-    root.mkdir(parents=True, exist_ok=True)
     environment = collect_system_environment(cpu_threads_per_model=args.threads)
     (root / "environment.json").write_text(
         json.dumps(environment, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -285,14 +283,13 @@ def run_calibration(
         "checks": checks,
         "pairs": pairs,
     }
-    archive = root.with_suffix(".zip")
     if not args.no_zip:
         report["archive"] = str(archive)
     (root / "calibration_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     if not args.no_zip:
-        _write_zip(root, archive)
+        write_zip(root, archive)
     return report
 
 
@@ -314,6 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrent-rtf", type=float)
     parser.add_argument("--max-concurrent-peak-rss-mb", type=float)
     parser.add_argument("--no-zip", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="delete an existing calibration output directory/archive before running",
+    )
     return parser
 
 
