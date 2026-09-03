@@ -47,6 +47,8 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
     if args.speed <= 0:
         raise ValueError("speed must be positive")
 
+    language = getattr(args, "language", None)
+    seed = getattr(args, "seed", None)
     adapter = _adapter(args.model)
     try:
         adapter.load_model(args.model_path, device="cpu", num_threads=args.threads)
@@ -55,10 +57,10 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
         kwargs: dict[str, object] = {"speed": args.speed}
         if voice is not None:
             kwargs["voice"] = voice
-        if args.language is not None:
-            kwargs["language"] = args.language
-        if args.seed is not None:
-            kwargs["seed"] = args.seed
+        if language is not None:
+            kwargs["language"] = language
+        if seed is not None:
+            kwargs["seed"] = seed
         output, metrics = MetricsCollector().measure_inference(adapter, args.text, **kwargs)
         audio = np.asarray(output.audio, dtype=np.float32).reshape(-1)
         duration_sec = float(audio.size / output.sample_rate)
@@ -79,8 +81,8 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
             "model": args.model,
             "model_path": str(Path(args.model_path).resolve()),
             "voice": voice,
-            "language": args.language,
-            "seed": args.seed,
+            "language": language,
+            "seed": seed,
             "threads": args.threads,
             "speed": args.speed,
             "sample_rate": output.sample_rate,
