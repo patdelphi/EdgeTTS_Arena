@@ -1,0 +1,36 @@
+models:
+  - id: dummy
+    name: Dummy Adapter
+    enabled: true
+    adapter: dummy
+    model_path: ""
+    keep_in_memory: true
+    num_threads: 1
+    experimental: false
+
+  - id: piper
+    name: Piper
+    enabled: false
+    adapter: piper
+    model_path: ./models/piper
+    keep_in_memory: false
+    num_threads: 4
+    experimental: false
+
+  - id: kokoro
+    name: Kokoro
+    enabled: false
+    adapter: kokoro
+    model_path: ./models/kokoro
+    keep_in_memory: false
+    num_threads: 4
+    experimental: false
+
+  - id: qwen3-tts-0.6b
+    name: Qwen3-TTS 0.6B
+    enabled: false
+    adapter: qwen3
+    model_path: ./models/qwen3-tts-0.6b
+    keep_in_memory: false
+    num_threads: 4
+    experimental: true
