@@ -11,6 +11,7 @@ from edgetts_arena.core.config import ResourceGuardSettings
 from edgetts_arena.core.model_registry import ModelRegistry, ModelSpec, ModelStatus
 from edgetts_arena.core.process_runner import ProcessResult, ProcessRunner, ProcessTimeoutError
 from edgetts_arena.core.resource_guard import ResourceGuard
+from edgetts_arena.utils import write_wav
 
 
 class TimeoutRunner:
@@ -28,7 +29,80 @@ class CrashRunner:
         )
 
 
-def _registry(*, keep_in_memory: bool = False) -> ModelRegistry:
+class ExternalOnlyRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def run(self, target: Any, *args: Any, timeout_sec: float, **kwargs: Any) -> ProcessResult:
+        raise AssertionError("spawn runner must not be used when worker_python is configured")
+
+    def run_external_worker(
+        self,
+        python_executable: str,
+        mode: str,
+        task: dict[str, Any],
+        *,
+        timeout_sec: float,
+    ) -> ProcessResult:
+        self.calls.append(
+            {
+                "python": python_executable,
+                "mode": mode,
+                "task": dict(task),
+                "timeout_sec": timeout_sec,
+            }
+        )
+        adapter = DummyTTSAdapter()
+        adapter.load_model(num_threads=int(task["num_threads"]))
+        output = adapter.infer(str(task["text"]), seed=0)
+        write_wav(str(task["audio_path"]), output.audio, output.sample_rate)
+        metrics = {
+            "inference_time_ms": 1.0,
+            "audio_duration_ms": float(len(output.audio) / output.sample_rate * 1000.0),
+            "rtf": 0.001,
+            "ttfb_ms": None,
+            "peak_rss_mb": 1.0,
+            "rss_delta_mb": 0.0,
+            "avg_cpu_usage_pct": 1.0,
+        }
+        if mode == "single":
+            value = {
+                "status": "success",
+                "metrics": metrics,
+                "metadata": {"runtime": "fake-external"},
+                "error": None,
+            }
+        elif mode == "repeated":
+            measurements = [
+                {
+                    "repeat": repeat,
+                    "status": "success",
+                    "metrics": metrics,
+                    "wrote_representative_audio": repeat == 1,
+                    "error": None,
+                }
+                for repeat in range(1, int(task["measured_runs"]) + 1)
+            ]
+            value = {
+                "status": "success",
+                "measurements": measurements,
+                "metadata": {"runtime": "fake-external"},
+                "audio_written": True,
+                "error": None,
+            }
+        else:
+            raise AssertionError(f"unexpected external worker mode: {mode}")
+        return ProcessResult(
+            status="success",
+            value=value,
+            exit_code=0,
+            pid=4242,
+            elapsed_ms=5.0,
+            termination="normal",
+        )
+
+
+def _registry(*, keep_in_memory: bool = False, worker_python: str = "") -> ModelRegistry:
     return ModelRegistry(
         [
             ModelSpec(
@@ -38,6 +112,7 @@ def _registry(*, keep_in_memory: bool = False) -> ModelRegistry:
                 enabled=True,
                 keep_in_memory=keep_in_memory,
                 num_threads=1,
+                worker_python=worker_python,
             )
         ],
         adapter_factories={"dummy": DummyTTSAdapter},
@@ -86,6 +161,30 @@ def test_single_model_worker_crash_maps_to_3002(tmp_path: Path) -> None:
     assert result["error"]["exit_code"] == 9
 
 
+def test_single_model_routes_to_configured_external_python(tmp_path: Path) -> None:
+    runner = ExternalOnlyRunner()
+    registry = _registry(worker_python="/dedicated/model/python")
+    store = RunArtifactStore(tmp_path / "exports")
+    service = BenchmarkService(
+        registry,
+        _guard(),
+        store,
+        process_runner=runner,  # type: ignore[arg-type]
+        inference_timeout_sec=7.0,
+    )
+    data = service.run(text="external single", model_ids=["dummy"], cpu_threads_per_model=1)
+    result = data["results"][0]
+    assert result["status"] == "success"
+    assert result["worker"]["pid"] == 4242
+    assert any("dedicated external Python worker" in warning for warning in result["warnings"])
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["python"] == "/dedicated/model/python"
+    assert runner.calls[0]["mode"] == "single"
+    assert runner.calls[0]["timeout_sec"] == 7.0
+    assert store.get_audio_file(data["run_id"], "dummy.wav").is_file()
+    assert registry.get_record("dummy").status == ModelStatus.UNLOADED
+
+
 def test_repeated_suite_uses_spawn_worker_and_writes_representative_audio(tmp_path: Path) -> None:
     registry = _registry()
     store = RunArtifactStore(tmp_path / "exports")
@@ -111,6 +210,40 @@ def test_repeated_suite_uses_spawn_worker_and_writes_representative_audio(tmp_pa
     assert len(result["measurements"]) == 2
     assert result["measurements"][0]["audio_url"] is not None
     assert result["measurements"][1]["audio_url"] is None
+    assert store.get_audio_file(data["run_id"], "TC-01__dummy.wav").is_file()
+    assert registry.get_record("dummy").status == ModelStatus.UNLOADED
+
+
+def test_repeated_suite_routes_group_to_configured_external_python(tmp_path: Path) -> None:
+    runner = ExternalOnlyRunner()
+    registry = _registry(worker_python="/dedicated/model/python")
+    store = RunArtifactStore(tmp_path / "exports")
+    service = RepeatedBenchmarkService(
+        registry,
+        _guard(),
+        store,
+        preset_suite=BenchmarkPresetSuite.load("config/benchmark_presets.json"),
+        process_runner=runner,  # type: ignore[arg-type]
+        inference_timeout_sec=4.0,
+    )
+    data = service.run_suite(
+        model_ids=["dummy"],
+        case_ids=["TC-01"],
+        warmup_runs=1,
+        measured_runs=2,
+        cpu_threads_per_model=1,
+    )
+    result = data["results"][0]
+    assert result["status"] == "success"
+    assert result["successful_runs"] == 2
+    assert result["worker"]["pid"] == 4242
+    assert any("dedicated external Python worker" in warning for warning in result["warnings"])
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["python"] == "/dedicated/model/python"
+    assert runner.calls[0]["mode"] == "repeated"
+    assert runner.calls[0]["timeout_sec"] == 12.0
+    assert runner.calls[0]["task"]["warmup_runs"] == 1
+    assert runner.calls[0]["task"]["measured_runs"] == 2
     assert store.get_audio_file(data["run_id"], "TC-01__dummy.wav").is_file()
     assert registry.get_record("dummy").status == ModelStatus.UNLOADED
 
