@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - ".github/model-gates/melotts.trigger"
+      - ".github/model-gates/qwen3.trigger"
   workflow_dispatch:
     inputs:
       model:
@@ -20,7 +21,7 @@ on:
 
 jobs:
   melotts-cpu-smoke:
-    if: ${{ github.event_name == 'push' || inputs.model == 'melotts' || inputs.model == 'both' || inputs.model == 'all' }}
+    if: ${{ (github.event_name == 'push' && (contains(github.event.head_commit.added, '.github/model-gates/melotts.trigger') || contains(github.event.head_commit.modified, '.github/model-gates/melotts.trigger'))) || (github.event_name == 'workflow_dispatch' && (inputs.model == 'melotts' || inputs.model == 'both' || inputs.model == 'all')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -88,7 +89,7 @@ jobs:
     uses: ./.github/workflows/cosyvoice-model-gate.yml
 
   qwen3-cpu-smoke:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'qwen3' || inputs.model == 'all') }}
+    if: ${{ (github.event_name == 'push' && (contains(github.event.head_commit.added, '.github/model-gates/qwen3.trigger') || contains(github.event.head_commit.modified, '.github/model-gates/qwen3.trigger'))) || (github.event_name == 'workflow_dispatch' && (inputs.model == 'qwen3' || inputs.model == 'all')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
