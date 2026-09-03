@@ -1,2 +1,2 @@
-gate=2
-reason=use-pinned-huggingface-model-and-cpu-torch
+gate=3
+reason=install-unidic-dictionary

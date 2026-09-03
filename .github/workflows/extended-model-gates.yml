@@ -33,6 +33,15 @@ jobs:
           python -m pip install -e .
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" "torchaudio==2.8.0"
           python -m pip install "git+https://github.com/myshell-ai/MeloTTS.git@209145371cff8fc3bd60d7be902ea69cbdb7965a"
+      - name: Prepare UniDic dictionary
+        run: |
+          python -m unidic download
+          python - <<'PY'
+          import MeCab
+          parsed = MeCab.Tagger().parse("テスト")
+          assert parsed
+          print(parsed.splitlines()[0])
+          PY
       - name: Prepare Chinese model files
         run: |
           mkdir -p models/melotts/zh exports/extended-gates
