@@ -14,11 +14,13 @@ on:
         options:
           - melotts
           - cosyvoice
+          - qwen3
           - both
+          - all
 
 jobs:
   melotts-cpu-smoke:
-    if: ${{ github.event_name == 'push' || inputs.model == 'melotts' || inputs.model == 'both' }}
+    if: ${{ github.event_name == 'push' || inputs.model == 'melotts' || inputs.model == 'both' || inputs.model == 'all' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -82,5 +84,43 @@ jobs:
           path: exports/extended-gates/
 
   cosyvoice-cpu-smoke:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'cosyvoice' || inputs.model == 'both') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'cosyvoice' || inputs.model == 'both' || inputs.model == 'all') }}
     uses: ./.github/workflows/cosyvoice-model-gate.yml
+
+  qwen3-cpu-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'qwen3' || inputs.model == 'all') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install project and official Qwen3-TTS CPU runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" "torchaudio==2.8.0"
+          python -m pip install "qwen-tts==0.1.1"
+      - name: Prepare pinned Qwen3-TTS 0.6B CustomVoice snapshot
+        run: |
+          mkdir -p exports/extended-gates
+          python scripts/prepare_qwen3_model.py \
+            --revision f3d1af06e4eaefac12b1ffa6726f9eef674a6f02 \
+            --output models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
+      - name: Real Qwen3-TTS CPU synthesis
+        run: |
+          python scripts/real_model_smoke.py qwen3 \
+            --model-path models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+            --voice Vivian \
+            --text "你好，这是一条 EdgeTTS Arena 的 Qwen3 TTS CPU 验证语音。" \
+            --threads 2 \
+            --output exports/extended-gates/qwen3.wav \
+            --report exports/extended-gates/qwen3.json
+          test -s exports/extended-gates/qwen3.wav
+          test -s exports/extended-gates/qwen3.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-cpu-smoke
+          path: exports/extended-gates/

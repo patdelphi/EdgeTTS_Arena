@@ -8,13 +8,14 @@ import numpy as np
 
 from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
 from edgetts_arena.adapters.melotts_adapter import MeloTTSAdapter
+from edgetts_arena.adapters.qwen3_adapter import Qwen3TTSAdapter
 from edgetts_arena.core.metrics_collector import MetricsCollector
 from edgetts_arena.utils import write_wav
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an explicit real-model CPU smoke gate.")
-    parser.add_argument("model", choices=("melotts", "cosyvoice"))
+    parser.add_argument("model", choices=("melotts", "cosyvoice", "qwen3"))
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--text", required=True)
     parser.add_argument("--voice")
@@ -25,13 +26,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _adapter(model: str):
+    if model == "melotts":
+        return MeloTTSAdapter()
+    if model == "cosyvoice":
+        return CosyVoiceTTSAdapter()
+    if model == "qwen3":
+        return Qwen3TTSAdapter()
+    raise ValueError(f"unknown model gate: {model}")
+
+
 def run_gate(args: argparse.Namespace) -> dict[str, object]:
     if args.threads < 1:
         raise ValueError("threads must be >= 1")
     if args.speed <= 0:
         raise ValueError("speed must be positive")
 
-    adapter = MeloTTSAdapter() if args.model == "melotts" else CosyVoiceTTSAdapter()
+    adapter = _adapter(args.model)
     try:
         adapter.load_model(args.model_path, device="cpu", num_threads=args.threads)
         voices = tuple(getattr(adapter, "available_voices", ()))
