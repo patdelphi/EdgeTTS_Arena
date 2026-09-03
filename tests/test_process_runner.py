@@ -5,7 +5,7 @@ import pytest
 
 from edgetts_arena.core import ProcessRunner, ProcessTimeoutError
 from edgetts_arena.core.process_runner import _tail_text
-from tests.process_targets import add, fail, sleep_for
+from tests.process_targets import add, fail, memory_error, sleep_for
 
 
 def _external_dummy_task(audio_path: Path) -> dict[str, object]:
@@ -27,6 +27,9 @@ def test_process_runner_success() -> None:
     assert result.mode == "spawn"
     assert result.runtime["protocol"] == "multiprocessing-spawn"
     assert result.runtime["python_version"]
+    assert result.oom_suspected is False
+    assert result.oom_classification == "none"
+    assert result.oom_evidence is None
 
 
 def test_process_runner_reports_worker_error() -> None:
@@ -35,14 +38,28 @@ def test_process_runner_reports_worker_error() -> None:
     assert result.error_type == "RuntimeError"
     assert "expected worker failure" in result.error_message
     assert result.mode == "spawn"
+    assert result.oom_classification == "none"
 
 
-def test_process_runner_terminates_timeout() -> None:
+def test_process_runner_reports_explicit_memory_error() -> None:
+    result = ProcessRunner().run(memory_error, timeout_sec=2.0)
+    assert result.status == "error"
+    assert result.error_type == "MemoryError"
+    assert "expected worker memory error" in (result.error_message or "")
+    assert result.oom_suspected is True
+    assert result.oom_classification == "worker_memory_error"
+    assert result.oom_evidence == {"source": "worker-exception", "error_type": "MemoryError"}
+
+
+def test_process_runner_terminates_timeout_without_oom_label() -> None:
     with pytest.raises(ProcessTimeoutError) as captured:
         ProcessRunner().run(sleep_for, 1.0, timeout_sec=0.05)
     diagnostics = captured.value.diagnostics()
     assert diagnostics["mode"] == "spawn"
     assert diagnostics["runtime"]["protocol"] == "multiprocessing-spawn"
+    assert diagnostics["oom_suspected"] is False
+    assert diagnostics["oom_classification"] == "none"
+    assert diagnostics["oom_evidence"] is None
 
 
 def test_external_python_worker_runs_dummy_protocol(tmp_path: Path) -> None:
@@ -63,6 +80,7 @@ def test_external_python_worker_runs_dummy_protocol(tmp_path: Path) -> None:
     assert result.value["status"] == "success"
     assert "_worker_runtime" not in result.value
     assert result.value["metrics"]["audio_duration_ms"] > 0
+    assert result.oom_classification == "none"
     assert audio_path.exists()
     assert audio_path.stat().st_size > 44
 
@@ -94,6 +112,7 @@ def test_external_python_worker_reports_spawn_failure(tmp_path: Path) -> None:
     assert result.status == "error"
     assert result.termination == "spawn_error"
     assert result.mode == "external"
+    assert result.oom_classification == "none"
     assert "failed to start external worker" in (result.error_message or "")
 
 
