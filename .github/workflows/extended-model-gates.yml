@@ -42,6 +42,23 @@ jobs:
           assert parsed
           print(parsed.splitlines()[0])
           PY
+      - name: Prepare NLTK G2P resources
+        run: |
+          python - <<'PY'
+          import nltk
+          from nltk import pos_tag
+
+          for package in (
+              "averaged_perceptron_tagger",
+              "averaged_perceptron_tagger_eng",
+              "cmudict",
+          ):
+              if not nltk.download(package, quiet=True):
+                  raise RuntimeError(f"failed to download NLTK resource: {package}")
+          tagged = pos_tag(["EdgeTTS", "Arena"])
+          assert tagged and len(tagged) == 2
+          print(tagged)
+          PY
       - name: Prepare Chinese model files
         run: |
           mkdir -p models/melotts/zh exports/extended-gates

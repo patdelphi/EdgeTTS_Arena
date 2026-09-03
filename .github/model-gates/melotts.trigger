@@ -1,2 +1,2 @@
-gate=3
-reason=install-unidic-dictionary
+gate=4
+reason=provision-nltk-g2p-resources
