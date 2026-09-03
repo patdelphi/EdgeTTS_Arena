@@ -50,12 +50,16 @@ def _default_adapter_factories() -> dict[str, AdapterFactory]:
     from edgetts_arena.adapters.kokoro_adapter import KokoroTTSAdapter
     from edgetts_arena.adapters.piper_adapter import PiperTTSAdapter
     from edgetts_arena.adapters.qwen3_adapter import Qwen3TTSAdapter
+    from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
+    from edgetts_arena.adapters.melotts_adapter import MeloTTSAdapter
 
     return {
         "dummy": DummyTTSAdapter,
         "piper": PiperTTSAdapter,
         "kokoro": KokoroTTSAdapter,
         "qwen3": Qwen3TTSAdapter,
+        "cosyvoice": CosyVoiceTTSAdapter,
+        "melotts": MeloTTSAdapter,
     }
 
 

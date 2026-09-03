@@ -34,3 +34,21 @@ models:
     keep_in_memory: false
     num_threads: 4
     experimental: true
+
+  - id: cosyvoice-300m-sft
+    name: CosyVoice 300M SFT
+    enabled: false
+    adapter: cosyvoice
+    model_path: ./models/cosyvoice/CosyVoice-300M-SFT
+    keep_in_memory: false
+    num_threads: 4
+    experimental: true
+
+  - id: melotts-zh
+    name: MeloTTS Chinese
+    enabled: false
+    adapter: melotts
+    model_path: ./models/melotts/zh/model.json
+    keep_in_memory: false
+    num_threads: 4
+    experimental: true

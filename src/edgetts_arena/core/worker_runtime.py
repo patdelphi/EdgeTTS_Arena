@@ -20,6 +20,12 @@ def _adapter_factory(adapter_name: str):
     if adapter_name == "qwen3":
         from edgetts_arena.adapters.qwen3_adapter import Qwen3TTSAdapter
         return Qwen3TTSAdapter
+    if adapter_name == "cosyvoice":
+        from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
+        return CosyVoiceTTSAdapter
+    if adapter_name == "melotts":
+        from edgetts_arena.adapters.melotts_adapter import MeloTTSAdapter
+        return MeloTTSAdapter
     raise ArenaError(1002, f"adapter '{adapter_name}' is unavailable", error_type="adapter_unavailable")
 
 
@@ -59,6 +65,7 @@ def run_isolated_model(task: dict[str, Any]) -> dict[str, Any]:
                 adapter.unload_model()
             except Exception:
                 pass
+
 
 
 def run_isolated_repeated_model(task: dict[str, Any]) -> dict[str, Any]:
@@ -130,7 +137,6 @@ def run_isolated_repeated_model(task: dict[str, Any]) -> dict[str, Any]:
                 adapter.unload_model()
             except Exception:
                 pass
-
 
 def _normalize_worker_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, ArenaError):

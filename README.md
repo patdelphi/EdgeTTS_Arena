@@ -175,3 +175,13 @@ GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + Fast
 - worker 内显式 `MemoryError` 映射为 `2002 worker_memory_error`；无返回的 `SIGKILL` 只标记“possible OOM or external kill”。
 - `keep_in_memory=true` 暂继续进程内执行并返回显式 warning，不伪装为已经具备 hard process timeout。
 
+
+
+## Stage 6 第二批模型
+
+第二批 Adapter 已完成 contract integration，但默认保持 disabled/experimental，尚未计为真实 CPU gate：
+
+- **CosyVoice 300M SFT**：面向官方 QwenAudio/CosyVoice `AutoModel + inference_sft()`；支持固定 speaker、speed 与真实 chunk streaming。当前只接 SFT 模式，不把 CosyVoice2/3 需要 prompt audio/text 的 zero-shot 路径硬塞进现有 voice-id schema。运行时需单独安装官方 source checkout。
+- **MeloTTS**：面向官方 `melo.api.TTS`；支持 EN/ES/FR/ZH/JP/KR、speaker id 与 speed。为保证 benchmark 可复现，Adapter 禁止隐式 HuggingFace 下载，要求本地 `model.json` 显式指向 config/checkpoint。
+
+配置中新增 `cosyvoice-300m-sft` 与 `melotts-zh`，均 `enabled: false`、`experimental: true`。只有完成可复现真实 CPU synthesis CI 后才会把对应 real-model gate 标记完成。
