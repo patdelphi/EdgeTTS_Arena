@@ -1,7 +1,7 @@
 # EdgeTTS-Arena 文档
 
 > 文档基线：v0.2（2026-09-03）  
-> 当前状态：**Stage 0~2 已实现；Piper/Kokoro real CPU gate 已通过；Qwen3-TTS 为 experimental/unavailable placeholder**
+> 当前状态：**Stage 0~3 已实现；Piper/Kokoro real CPU gate 已通过；同步 API benchmark/download/export/streaming gate 已接通；Qwen3-TTS 为 experimental/unavailable placeholder**
 
 EdgeTTS-Arena 是面向 1B 参数量以下、CPU/端侧部署优先的 TTS 多模型评测、横向对比与试听工作台。
 
@@ -33,10 +33,18 @@ EdgeTTS-Arena 是面向 1B 参数量以下、CPU/端侧部署优先的 TTS 多�
 ## 当前冻结口径
 
 - 包目录：`src/edgetts_arena/`
+- 本地 API 启动：`edgetts-arena serve`
 - 模型状态：`GET /api/v1/system/models`
 - Benchmark：同步 `POST /api/v1/benchmark/run`
+- Audio：`GET /api/v1/audio/download/{run_id}/{filename}`
+- Export：`GET /api/v1/export/{run_id}`
+- Streaming：`WS /api/v1/tts/stream?model=<model_id>`，必须 capability gate
 - 归档标识：`run_id`
 - 模型能力：capability-driven
 - TTFB：仅真流式模型有效
 - 默认模式：Sequential
 - MVP：Dummy + Piper + Kokoro；Qwen3-TTS 为 experimental
+
+## 下一阶段
+
+**Stage 4 — Arena UI**：2~4 模型对比、capability 驱动参数、试听、Blind AB MVP，并直接复用 Stage 3 API。

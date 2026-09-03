@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from edgetts_arena.adapters import DummyTTSAdapter, KokoroTTSAdapter, PiperTTSAdapter
+from edgetts_arena.core.config import load_settings
 from edgetts_arena.core.logging import configure_logging
 from edgetts_arena.utils import write_wav
 
@@ -35,12 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
     kokoro.add_argument("--speed", type=float, default=1.0, help="speech speed multiplier (0.5-2.0)")
     kokoro.add_argument("--threads", type=int, default=4)
     kokoro.add_argument("--output", type=Path, default=Path("exports/kokoro.wav"))
+
+    serve = subparsers.add_parser("serve", help="start the local FastAPI service")
+    serve.add_argument("--host", default=None, help="bind host; defaults to app config")
+    serve.add_argument("--port", type=int, default=None, help="bind port; defaults to app config")
+    serve.add_argument("--reload", action="store_true", help="enable uvicorn auto-reload for development")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    configure_logging()
+    settings = load_settings()
+    configure_logging(settings.log_level)
 
     if args.command == "dummy":
         adapter = DummyTTSAdapter()
@@ -79,6 +86,27 @@ def main() -> int:
         )
         path = write_wav(args.output, output.audio, output.sample_rate)
         print(path)
+        return 0
+
+    if args.command == "serve":
+        import logging
+
+        import uvicorn
+
+        host = args.host or settings.host
+        port = args.port or settings.port
+        if host in {"0.0.0.0", "::"}:
+            logging.getLogger(__name__).warning(
+                "API is binding to %s and may be reachable from other devices", host
+            )
+        uvicorn.run(
+            "edgetts_arena.api.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            reload=args.reload,
+            log_level=settings.log_level.lower(),
+        )
         return 0
 
     return 2

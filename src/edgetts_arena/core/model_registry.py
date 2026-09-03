@@ -108,19 +108,51 @@ class ModelRegistry:
         try:
             return self._records[model_id]
         except KeyError as exc:
-            raise ArenaError(1002, f"model '{model_id}' does not exist", error_type="model_not_found") from exc
+            raise ArenaError(
+                1002,
+                f"model '{model_id}' does not exist",
+                error_type="model_not_found",
+            ) from exc
 
-    def load(self, model_id: str) -> BaseTTSAdapter:
+    def set_status(
+        self,
+        model_id: str,
+        status: ModelStatus,
+        *,
+        error: str | None = None,
+    ) -> None:
+        record = self.get_record(model_id)
+        record.status = status
+        record.error = error
+
+    def load(
+        self,
+        model_id: str,
+        *,
+        num_threads: int | None = None,
+    ) -> BaseTTSAdapter:
         record = self.get_record(model_id)
         if record.status == ModelStatus.UNAVAILABLE:
-            raise ArenaError(1002, f"model '{model_id}' is unavailable", error_type="model_unavailable")
-        if record.adapter is not None and record.status == ModelStatus.READY:
+            raise ArenaError(
+                1002,
+                f"model '{model_id}' is unavailable",
+                error_type="model_unavailable",
+            )
+        if record.adapter is not None and record.status in {ModelStatus.READY, ModelStatus.BUSY}:
             return record.adapter
 
         factory = self._factories.get(record.spec.adapter)
         if factory is None:
             record.status = ModelStatus.UNAVAILABLE
-            raise ArenaError(1002, f"adapter '{record.spec.adapter}' is unavailable", error_type="adapter_unavailable")
+            raise ArenaError(
+                1002,
+                f"adapter '{record.spec.adapter}' is unavailable",
+                error_type="adapter_unavailable",
+            )
+
+        threads = record.spec.num_threads if num_threads is None else int(num_threads)
+        if threads < 1:
+            raise ValueError("num_threads must be >= 1")
 
         record.status = ModelStatus.LOADING
         record.error = None
@@ -129,7 +161,7 @@ class ModelRegistry:
             adapter.load_model(
                 record.spec.model_path,
                 device="cpu",
-                num_threads=record.spec.num_threads,
+                num_threads=threads,
             )
         except Exception as exc:
             record.status = ModelStatus.ERROR
@@ -151,24 +183,33 @@ class ModelRegistry:
             else ModelStatus.UNAVAILABLE
         )
 
+    def model_info(self, model_id: str) -> dict[str, object]:
+        record = self.get_record(model_id)
+        factory = self._factories.get(record.spec.adapter)
+        capabilities = None
+        voices: list[str] = []
+        if factory is not None:
+            capabilities = factory.capabilities.to_dict()  # type: ignore[attr-defined]
+            source = record.adapter if record.adapter is not None else factory
+            voices = list(getattr(source, "available_voices", ()))
+
+        default_voice = None
+        if voices:
+            default_voice = "default" if "default" in voices else voices[0]
+
+        return {
+            "id": record.spec.id,
+            "name": record.spec.name,
+            "status": record.status.value,
+            "experimental": record.spec.experimental,
+            "model_version": "unknown",
+            "runtime": "unknown",
+            "quantization": "unknown",
+            "capabilities": capabilities,
+            "default_voice": default_voice,
+            "voices": voices,
+            "error": record.error,
+        }
+
     def list_models(self) -> list[dict[str, object]]:
-        result: list[dict[str, object]] = []
-        for record in self._records.values():
-            factory = self._factories.get(record.spec.adapter)
-            capabilities = None
-            voices: list[str] = []
-            if factory is not None:
-                capabilities = factory.capabilities.to_dict()  # type: ignore[attr-defined]
-                voices = list(getattr(factory, "available_voices", ()))
-            result.append(
-                {
-                    "id": record.spec.id,
-                    "name": record.spec.name,
-                    "status": record.status.value,
-                    "experimental": record.spec.experimental,
-                    "capabilities": capabilities,
-                    "voices": voices,
-                    "error": record.error,
-                }
-            )
-        return result
+        return [self.model_info(model_id) for model_id in self._records]
