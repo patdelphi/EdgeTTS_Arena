@@ -67,10 +67,13 @@ def create_app(
     registry = registry or ModelRegistry.from_yaml()
     artifact_store = RunArtifactStore(exports_root)
     resource_guard = ResourceGuard(settings.resource_guard)
-    benchmark_service = BenchmarkService(registry, resource_guard, artifact_store)
+    benchmark_service = BenchmarkService(
+        registry, resource_guard, artifact_store, inference_timeout_sec=settings.inference_timeout_sec
+    )
     preset_suite = BenchmarkPresetSuite.load()
     repeated_benchmark_service = RepeatedBenchmarkService(
-        registry, resource_guard, artifact_store, preset_suite=preset_suite
+        registry, resource_guard, artifact_store, preset_suite=preset_suite,
+        inference_timeout_sec=settings.inference_timeout_sec,
     )
 
     app = FastAPI(

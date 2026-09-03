@@ -109,6 +109,7 @@ def main() -> int:
             ResourceGuard(settings.resource_guard),
             store,
             preset_suite=BenchmarkPresetSuite.load(),
+            inference_timeout_sec=settings.inference_timeout_sec,
         )
         data = service.run_suite(
             model_ids=list(args.models),

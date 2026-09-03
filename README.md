@@ -69,31 +69,106 @@ Gradio 是可选依赖，通过 `mount_gradio_app()` 挂载在同一个 FastAPI 
 
 ## 标准 Benchmark Suite
 
-标准题库位于 `config/benchmark_presets.json`：TC-01~TC-05。默认策略：**warm-up 1 次 + measured 3 次**，保留 raw measurements，并聚合 mean / median / min / max / P95 / variance。
+标准题库位于 `config/benchmark_presets.json`：
+
+- TC-01 日常短交互
+- TC-02 数字、单位与符号
+- TC-03 中英混读
+- TC-04 多音字
+- TC-05 300+ 字长文本稳定性
+
+默认策略：**warm-up 1 次 + measured 3 次**。每次正式测量保留原始 metrics，同时聚合：
+
+- mean
+- median
+- min / max
+- P95
+- variance
+
+API：
 
 ```bash
-edgetts-arena suite --models dummy --cases TC-01 TC-02 --warmup-runs 1 --measured-runs 3 --threads 2
+curl -X POST http://127.0.0.1:8000/api/v1/benchmark/suite \
+  -H 'Content-Type: application/json' \
+  -d '{"models":["dummy"],"case_ids":["TC-01","TC-02"],"warmup_runs":1,"measured_runs":3}'
 ```
 
-Suite 在一个 `run_id` 下保存代表 WAV、`benchmark_report.json`、`environment.json` 和 ZIP。
+CLI：
 
-## Dummy / Piper / Kokoro
+```bash
+edgetts-arena suite \
+  --models dummy \
+  --cases TC-01 TC-02 \
+  --warmup-runs 1 \
+  --measured-runs 3 \
+  --threads 2
+```
+
+Suite 在一个 `run_id` 下保存：
+
+```text
+exports/<run_id>/
+  audio/<case_id>__<model_id>.wav
+  benchmark_report.json
+  environment.json
+  <run_id>.zip
+```
+
+`environment.json` 记录 OS、CPU、内存、Python、关键 package versions 和线程设置；report 保存请求、标准语料、每次原始 measurement、aggregate statistics 以及模型 metadata。
+
+## Dummy Smoke Test
 
 ```bash
 edgetts-arena dummy --text "hello" --output exports/dummy.wav
 ```
 
-Piper 与 Kokoro 均已有 GitHub Actions 真实 CPU gate。Qwen3 当前仍为受控 experimental/unavailable placeholder。
+## Piper
 
-## Stage 6 Hardening（进行中）
+```bash
+python -m pip install -e ".[piper]"
+python -m piper.download_voices en_US-lessac-low --data-dir models/piper
+edgetts-arena piper --model models/piper/en_US-lessac-low.onnx --text "Piper test" --threads 2 --output exports/piper.wav
+```
 
-第一批已实现：
+GitHub Actions 已用真实 Piper voice 完成 CPU gate。
 
-- Ubuntu / Windows / macOS Python 3.11 Dummy WAV + FastAPI health/preset smoke CI。
-- Concurrent 按逻辑核数公平分配 `threads_per_model`，避免 `models × threads` 超配 CPU。
+## Kokoro
+
+```bash
+python -m pip install -e ".[kokoro]"
+edgetts-arena kokoro --model models/kokoro/kokoro-v1.0.int8.onnx --voice af_heart --text "Kokoro test" --threads 2 --output exports/kokoro.wav
+```
+
+Kokoro 使用 `kokoro-onnx` + ONNX Runtime；GitHub Actions 已用 v1.0 int8 ONNX 完成真实 CPU gate。
+
+## Qwen3-TTS experimental
+
+Qwen3 当前仍为受控 placeholder：默认 disabled/unavailable，不绑定未验证社区 CPU runtime，不伪造 capability、音频或 benchmark。
+
+## 下一阶段
+
+**Stage 6 — Hardening（进行中）**：已加入 Windows/macOS/Linux Dummy+API smoke、Concurrent CPU/内存预算与 `execution_profile=pressure` 报告隔离，并完成非持久模型的进程级 watchdog：单轮 benchmark 与 Standard Suite 均可在 hard timeout 后终止 worker；worker crash/timeout 分别归一化为 `3002` / `3001`。下一步继续 OOM 识别恢复、第二批模型与弱算力设备验证。
+
+
+## Stage 6 Hardening（第一批）
+
+Concurrent 单轮 benchmark 现在会先生成资源计划：
+
+- 按逻辑核数公平分配 `threads_per_model`，避免 `models × threads` 直接超配 CPU。
 - 默认最多 4 个并发模型。
 - 默认按每并发模型至少 512 MB 可用内存预算，并继续遵守 soft/hard memory guard。
-- Concurrent 返回 `execution_profile=pressure`；Sequential 为 `execution_profile=baseline`。
-- 报告保存 requested/effective threads、total thread budget 和 resource warnings。
+- 返回 `execution_profile=pressure`、requested/effective threads、total thread budget 和 resource warnings。
+- Sequential 保持 `execution_profile=baseline`。
 
-下一步：把现有 `ProcessRunner` 正式接入 benchmark 主链路，实现进程级 timeout/OOM/worker-crash watchdog。
+GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + FastAPI health/preset smoke，并执行真实 `spawn` worker Suite smoke。
+
+## Stage 6 Watchdog（第二批）
+
+`BenchmarkService` 与 `RepeatedBenchmarkService` 默认启用进程隔离；嵌入式调用或测试可显式传入 `isolate_model_processes=False` 关闭。对 `keep_in_memory=false` 的模型：
+
+- 单轮 benchmark 在独立 `spawn` worker 中完成 load → infer → WAV write → unload。
+- Standard Suite 以一个 `case/model` 为 worker 粒度，在同一子进程完成 warm-up + repeated measurements。
+- WAV 直接写到主进程预先校验的 `exports/<run_id>/audio/` 路径，multiprocessing queue 只回传 metrics / metadata / error。
+- 单轮 hard timeout 使用 `inference_timeout_sec`；Suite group timeout 为 `inference_timeout_sec × (warmup + measured)`。
+- timeout 返回 `3001 inference_timeout`；异常退出返回 `3002 worker_exited`，主服务继续运行。
+- `keep_in_memory=true` 暂继续进程内执行并返回显式 warning，不伪装为已经具备 hard process timeout。
