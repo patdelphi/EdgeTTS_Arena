@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_REPO_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+DEFAULT_REVISION = "f3d1af06e4eaefac12b1ffa6726f9eef674a6f02"
 DEFAULT_OUTPUT = Path("models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice")
 REQUIRED_FILES = (
     "config.json",
@@ -55,10 +56,14 @@ def validate_snapshot(root: Path) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Download and validate the official Qwen3-TTS 0.6B CustomVoice snapshot."
+        description="Download and validate the pinned official Qwen3-TTS 0.6B CustomVoice snapshot."
     )
     parser.add_argument("--repo-id", default=DEFAULT_REPO_ID)
-    parser.add_argument("--revision", default=None, help="Optional Hugging Face revision/commit to pin.")
+    parser.add_argument(
+        "--revision",
+        default=DEFAULT_REVISION,
+        help="Hugging Face revision/commit to pin; defaults to the Arena-verified revision.",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser
 
@@ -90,7 +95,10 @@ def main() -> int:
         **validation,
     }
     manifest_path = output / "asset_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
     return 0
 
