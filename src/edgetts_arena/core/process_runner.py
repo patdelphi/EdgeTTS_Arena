@@ -13,6 +13,12 @@ import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from edgetts_arena.core.oom_diagnostics import (
+    application_error_type,
+    classify_oom,
+    read_linux_cgroup_memory_events,
+)
+
 _EXTERNAL_RESULT_PREFIX = "__EDGETTS_ARENA_RESULT__="
 _EXTERNAL_PROTOCOL_VERSION = 1
 _DIAGNOSTIC_TEXT_LIMIT = 8192
@@ -65,6 +71,8 @@ class ProcessResult:
     termination: str | None = None
     signal_name: str | None = None
     oom_suspected: bool = False
+    oom_classification: str = "none"
+    oom_evidence: dict[str, Any] | None = None
     mode: str | None = None
     runtime: dict[str, Any] | None = None
 
@@ -77,6 +85,8 @@ class ProcessResult:
             "termination": self.termination,
             "signal": self.signal_name,
             "oom_suspected": self.oom_suspected,
+            "oom_classification": self.oom_classification,
+            "oom_evidence": self.oom_evidence,
             "runtime": self.runtime,
         }
 
@@ -112,6 +122,8 @@ class ProcessTimeoutError(TimeoutError):
             "termination": self.termination,
             "signal": self.signal_name,
             "oom_suspected": False,
+            "oom_classification": "none",
+            "oom_evidence": None,
             "runtime": self.runtime,
         }
 
@@ -136,6 +148,21 @@ def _worker_entry(
         )
 
 
+def _oom_details(
+    *,
+    exit_code: int | None,
+    error_type: str | None,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> tuple[str, bool, dict[str, Any] | None]:
+    return classify_oom(
+        exit_code=exit_code,
+        error_type=error_type,
+        before=before,
+        after=after,
+    )
+
+
 class ProcessRunner:
     """Runs isolated model work in either the current Python or a dedicated venv Python."""
 
@@ -154,6 +181,7 @@ class ProcessRunner:
 
         started = time.perf_counter()
         runtime = _current_runtime("multiprocessing-spawn")
+        cgroup_before = read_linux_cgroup_memory_events()
         result_queue = self._context.Queue(maxsize=1)
         process = self._context.Process(
             target=_worker_entry,
@@ -189,16 +217,22 @@ class ProcessRunner:
             )
 
         exit_code = process.exitcode
-        termination, signal_name, oom_suspected = _exit_diagnostics(exit_code)
+        termination, signal_name, _ = _exit_diagnostics(exit_code)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        cgroup_after = read_linux_cgroup_memory_events()
         try:
             status, value, error_type, error_message, tb = result_queue.get(timeout=0.5)
         except queue.Empty:
-            if oom_suspected:
-                message = (
-                    "worker exited without returning a result after SIGKILL; "
-                    "possible OOM or external kill"
-                )
+            oom_classification, oom_suspected, oom_evidence = _oom_details(
+                exit_code=exit_code,
+                error_type=None,
+                before=cgroup_before,
+                after=cgroup_after,
+            )
+            if oom_classification == "cgroup_oom_kill_observed":
+                message = "worker exited after SIGKILL while cgroup memory.events recorded an oom_kill increment"
+            elif oom_suspected:
+                message = "worker exited without returning a result after SIGKILL; possible OOM or external kill"
             else:
                 message = "worker exited without returning a result"
             return ProcessResult(
@@ -211,6 +245,8 @@ class ProcessRunner:
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                oom_classification=oom_classification,
+                oom_evidence=oom_evidence,
                 mode="spawn",
                 runtime=runtime,
             )
@@ -219,6 +255,13 @@ class ProcessRunner:
             result_queue.cancel_join_thread()
             process.close()
 
+        effective_error_type = error_type or application_error_type(value)
+        oom_classification, oom_suspected, oom_evidence = _oom_details(
+            exit_code=exit_code,
+            error_type=effective_error_type,
+            before=cgroup_before,
+            after=cgroup_after,
+        )
         return ProcessResult(
             status=status,
             value=value,
@@ -231,6 +274,8 @@ class ProcessRunner:
             termination=termination,
             signal_name=signal_name,
             oom_suspected=oom_suspected,
+            oom_classification=oom_classification,
+            oom_evidence=oom_evidence,
             mode="spawn",
             runtime=runtime,
         )
@@ -258,6 +303,7 @@ class ProcessRunner:
             os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
         )
         started = time.perf_counter()
+        cgroup_before = read_linux_cgroup_memory_events()
         try:
             process = subprocess.Popen(
                 [executable, "-m", "edgetts_arena.core.external_worker", mode],
@@ -307,10 +353,17 @@ class ProcessRunner:
             )
 
         exit_code = process.returncode
-        termination, signal_name, oom_suspected = _exit_diagnostics(exit_code)
+        termination, signal_name, _ = _exit_diagnostics(exit_code)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        cgroup_after = read_linux_cgroup_memory_events()
         stderr_tail = _tail_text(stderr)
         if exit_code != 0:
+            oom_classification, oom_suspected, oom_evidence = _oom_details(
+                exit_code=exit_code,
+                error_type=None,
+                before=cgroup_before,
+                after=cgroup_after,
+            )
             return ProcessResult(
                 status="error",
                 error_type="ExternalWorkerExited",
@@ -322,6 +375,8 @@ class ProcessRunner:
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                oom_classification=oom_classification,
+                oom_evidence=oom_evidence,
                 mode="external",
             )
 
@@ -340,7 +395,6 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
-                oom_suspected=oom_suspected,
                 mode="external",
             )
         try:
@@ -356,7 +410,6 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
-                oom_suspected=oom_suspected,
                 mode="external",
             )
         if not isinstance(value, dict):
@@ -370,7 +423,6 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
-                oom_suspected=oom_suspected,
                 mode="external",
             )
 
@@ -389,10 +441,16 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
-                oom_suspected=oom_suspected,
                 mode="external",
             )
         runtime = {"protocol": "external-json", **raw_runtime}
+        effective_error_type = application_error_type(value)
+        oom_classification, oom_suspected, oom_evidence = _oom_details(
+            exit_code=exit_code,
+            error_type=effective_error_type,
+            before=cgroup_before,
+            after=cgroup_after,
+        )
         return ProcessResult(
             status="success",
             value=value,
@@ -402,6 +460,8 @@ class ProcessRunner:
             termination=termination,
             signal_name=signal_name,
             oom_suspected=oom_suspected,
+            oom_classification=oom_classification,
+            oom_evidence=oom_evidence,
             mode="external",
             runtime=runtime,
         )
