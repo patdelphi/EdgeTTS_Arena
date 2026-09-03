@@ -2,7 +2,7 @@
 
 EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性能评测与试听工作台。
 
-当前状态：**主 Arena 已达到本地部署测试条件，可以开始本地部署测试。** Stage 0~5 MVP 已完成；Stage 6 已完成跨平台/ARM64/1-CPU smoke、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external Python worker、Qwen3 官方 FP32 CPU 功能路径、Qwen3 native INT8/INT4 hosted CPU 量化验证，以及真实目标设备验收包。Qwen3 native INT8 是当前推荐 CPU 优化候选；INT8/INT4 Blind AB 人工评分与真实弱设备实测仍属于扩展验证，不阻塞主 Arena 本地部署测试。
+当前状态：**主 Arena 已达到本地部署测试条件，可以开始本地部署测试。** Stage 0~5 MVP 已完成；Stage 6 已完成跨平台/ARM64/1-CPU smoke、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external Python worker、扩展模型 pinned bootstrap、Qwen3 官方 FP32 CPU 功能路径、Qwen3 native INT8/INT4 hosted CPU 量化验证，以及真实目标设备验收包。Qwen3 native INT8 是当前推荐 CPU 优化候选；INT8/INT4 Blind AB 人工评分与真实弱设备实测仍属于扩展验证，不阻塞主 Arena 本地部署测试。
 
 - 本地部署与验收：[`docs/12_本地部署与验收指南.md`](./docs/12_本地部署与验收指南.md)
 - 扩展模型：[`docs/12_第二批模型适配状态.md`](./docs/12_第二批模型适配状态.md)
@@ -33,6 +33,40 @@ Windows PowerShell 使用 `py -3.11 -m venv .venv` 与 `.\.venv\Scripts\Activate
 Arena 支持 1~4 模型、Sequential/Concurrent、TC-01~05、warm-up/repeats、ZIP、Blind AB。`config.language`、CLI `suite --language` 与 Gradio Language control 均为 capability-aware。
 
 多模型 Arena 会计算共同 voice/language 交集：只有所有所选模型都支持且存在共同值时才允许统一选择，否则各模型使用自身默认。这使同一模型的不同量化 backend 可以固定相同 voice/language/seed 做公平 Blind AB。
+
+## 扩展模型 pinned bootstrap
+
+`scripts/bootstrap_extended_model.py` 为 Qwen3 official、MeloTTS、CosyVoice 生成并执行与真实 heavy gate 对齐的专用 venv/依赖/资产/Doctor 流程。
+
+默认只打印计划，**不会自动联网或下载重模型**：
+
+```bash
+python scripts/bootstrap_extended_model.py qwen3 --python python3.11
+python scripts/bootstrap_extended_model.py melotts --python python3.10
+python scripts/bootstrap_extended_model.py cosyvoice --python python3.10
+```
+
+确认计划后显式执行：
+
+```bash
+python scripts/bootstrap_extended_model.py qwen3 --python python3.11 --execute
+python scripts/bootstrap_extended_model.py melotts --python python3.10 --execute
+python scripts/bootstrap_extended_model.py cosyvoice --python python3.10 --execute
+```
+
+CosyVoice 仍要求主机先提供 `git`、`sox`（Linux 通常还需 `libsox-dev`）；bootstrap 不会自动执行 `sudo` 或修改系统包。每个 profile 都会检查指定 Python 版本、固定 runtime/source/model revision、做 runtime preflight，并在最后执行定向 `doctor --worker MODEL_ID`。
+
+成功后生成：
+
+```text
+exports/bootstrap/<model>/bootstrap_plan.json
+exports/bootstrap/<model>/env.sh
+exports/bootstrap/<model>/env.ps1
+```
+
+Linux/macOS 启动主 Arena 前可执行 `source exports/bootstrap/<model>/env.sh`；Windows PowerShell 可运行对应 `env.ps1`。`--skip-assets` 可只准备 runtime/venv，`--no-doctor` 可跳过最终 Doctor。
+
+资产 helper 与 heavy gate 共用同一准备逻辑：Qwen3 snapshot 默认 pin 到 Arena 已验证 revision；MeloTTS 生成 `model.json` + SHA-256 manifest；CosyVoice CPU requirements、300M SFT snapshot 与 WeText 本地前端均有独立 helper。
 
 ## Qwen3 hosted CPU 基线
 
@@ -93,4 +127,3 @@ python scripts/target_device_acceptance.py qwen3-native \
 - 用目标设备验收包完成真实 ARM/树莓派/低功耗弱设备实机验证
 - Concurrent 真实设备资源校准
 - 平台特定确定性 OOM attribution（可选）
-- 扩展模型 venv/资产一键 bootstrap
