@@ -2,8 +2,11 @@
 
 EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性能评测与试听工作台。
 
-当前实现状态：**Stage 0~5 已完成 MVP：Piper 与 Kokoro 已通过真实 CPU CI；FastAPI API、Gradio Arena UI、Blind AB、TC-01~05 标准 Benchmark Suite、warm-up/repeated benchmark、统计聚合与可复现 ZIP 均已接通；Qwen3-TTS 0.6B 继续保持 experimental/unavailable placeholder。**
+当前状态：**主 Arena 已达到本地部署测试条件。** Stage 0~5 MVP 已完成；Stage 6 已完成 Windows/macOS/Linux、原生 ARM64、GitHub-hosted 1-CPU smoke，Python 3.10/3.11/3.12 主 CI 全绿，Piper/Kokoro 真实 CPU gate 通过；MeloTTS 与 CosyVoice 300M SFT 也已完成独立 x86_64 CPU synthesis gate。CosyVoice 的 WeText 前端资产已改为显式本地 FST，并通过“禁止 `snapshot_download()` 后仍可 load model”的 offline preflight。
 
+> 部署边界：主 Arena 环境直接测试 Dummy/Piper/Kokoro。CosyVoice/MeloTTS 继续保持 `experimental + disabled`，建议放在独立 venv 中验证，避免官方旧依赖覆盖主 UI 的 Gradio/FastAPI/Pydantic 版本。真实 ARM/弱算力目标设备实机验证仍是 Stage 6 剩余项，但不阻塞桌面端本地部署测试。
+
+- 本地部署与验收：[`docs/12_本地部署与验收指南.md`](./docs/12_本地部署与验收指南.md)
 - 开发规格：[`docs/README.md`](./docs/README.md)
 - API 规范：[`docs/04_接口协议与数据规范.md`](./docs/04_接口协议与数据规范.md)
 - Benchmark 规范：[`docs/05_评测基准与测试用例集.md`](./docs/05_评测基准与测试用例集.md)
@@ -15,13 +18,19 @@ EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性
 
 ```text
 Python >=3.10,<3.13
+推荐本地首次部署：Python 3.11
 ```
+
+主 Arena 开发环境：
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,ui,piper,kokoro]"
 pytest
+edgetts-arena doctor --ui --exports-root exports/doctor
 ```
+
+`doctor` 会检查 Python/config、导出目录、Dummy 真生成、FastAPI app，以及 `--ui` 时的 Gradio 挂载条件。
 
 ## 启动 API
 
@@ -47,7 +56,6 @@ WS   /api/v1/tts/stream?model=<model_id>
 ## 启动 Arena UI
 
 ```bash
-python -m pip install -e ".[ui]"
 edgetts-arena serve --ui
 ```
 
@@ -69,29 +77,9 @@ Gradio 是可选依赖，通过 `mount_gradio_app()` 挂载在同一个 FastAPI 
 
 ## 标准 Benchmark Suite
 
-标准题库位于 `config/benchmark_presets.json`：
+标准题库位于 `config/benchmark_presets.json`：TC-01 日常短交互、TC-02 数字/单位/符号、TC-03 中英混读、TC-04 多音字、TC-05 300+ 字长文本稳定性。
 
-- TC-01 日常短交互
-- TC-02 数字、单位与符号
-- TC-03 中英混读
-- TC-04 多音字
-- TC-05 300+ 字长文本稳定性
-
-默认策略：**warm-up 1 次 + measured 3 次**。每次正式测量保留原始 metrics，同时聚合：
-
-- mean
-- median
-- min / max
-- P95
-- variance
-
-API：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/benchmark/suite \
-  -H 'Content-Type: application/json' \
-  -d '{"models":["dummy"],"case_ids":["TC-01","TC-02"],"warmup_runs":1,"measured_runs":3}'
-```
+默认策略：**warm-up 1 次 + measured 3 次**。每次正式测量保留原始 metrics，同时聚合 mean、median、min/max、P95、variance。
 
 CLI：
 
@@ -114,8 +102,6 @@ exports/<run_id>/
   <run_id>.zip
 ```
 
-`environment.json` 记录 OS、CPU、内存、Python、关键 package versions 和线程设置；report 保存请求、标准语料、每次原始 measurement、aggregate statistics 以及模型 metadata。
-
 ## Dummy Smoke Test
 
 ```bash
@@ -125,79 +111,44 @@ edgetts-arena dummy --text "hello" --output exports/dummy.wav
 ## Piper
 
 ```bash
-python -m pip install -e ".[piper]"
 python -m piper.download_voices en_US-lessac-low --data-dir models/piper
 edgetts-arena piper --model models/piper/en_US-lessac-low.onnx --text "Piper test" --threads 2 --output exports/piper.wav
 ```
 
-GitHub Actions 已用真实 Piper voice 完成 CPU gate。
+GitHub Actions 已用真实 Piper voice 完成 CPU gate。要让 Arena UI 使用 Piper，将 `config/models_config.yaml` 中 `piper.enabled` 改为 `true`。
 
 ## Kokoro
 
+先下载 `kokoro-v1.0.int8.onnx` 与 `voices-v1.0.bin` 到 `models/kokoro/`，完整命令见本地部署指南，然后：
+
 ```bash
-python -m pip install -e ".[kokoro]"
 edgetts-arena kokoro --model models/kokoro/kokoro-v1.0.int8.onnx --voice af_heart --text "Kokoro test" --threads 2 --output exports/kokoro.wav
 ```
 
-Kokoro 使用 `kokoro-onnx` + ONNX Runtime；GitHub Actions 已用 v1.0 int8 ONNX 完成真实 CPU gate。
+Kokoro 使用 `kokoro-onnx` + ONNX Runtime；GitHub Actions 已用 v1.0 int8 ONNX 完成真实 CPU gate。要让 Arena UI 使用 Kokoro，将 `config/models_config.yaml` 中 `kokoro.enabled` 改为 `true`。
 
 ## Qwen3-TTS experimental
 
 Qwen3 当前仍为受控 placeholder：默认 disabled/unavailable，不绑定未验证社区 CPU runtime，不伪造 capability、音频或 benchmark。
 
-## 下一阶段
-
-**Stage 6 — Hardening（进行中）**：Windows/macOS/Linux、原生 ARM64 与 GitHub-hosted 1-CPU smoke 已通过；Concurrent CPU/内存预算、进程级 watchdog 与 worker 退出诊断已落地。ResourceGuard 会综合 process CPU、affinity、Linux cgroup CPU quota 与 host CPU，使用最保守的有效核数；内存预算同样取 host available 与 cgroup remaining 的较小值。`environment.json` 同时记录 `cpu_effective_cores` 与 `available_ram_effective_gb`。剩余重点是第二批模型真实 CPU gate 与真实 ARM/弱算力设备实机验证。
-
-
-## Stage 6 Hardening（第一批）
-
-Concurrent 单轮 benchmark 现在会先生成资源计划：
-
-- 按逻辑核数公平分配 `threads_per_model`，避免 `models × threads` 直接超配 CPU。
-- 默认最多 4 个并发模型。
-- 默认按每并发模型至少 512 MB 可用内存预算，并继续遵守 soft/hard memory guard。
-- 返回 `execution_profile=pressure`、requested/effective threads、total thread budget 和 resource warnings。
-- Sequential 保持 `execution_profile=baseline`。
-
-GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + FastAPI health/preset smoke，并执行真实 `spawn` worker Suite smoke。
-
-## Stage 6 Watchdog（第二批）
-
-`BenchmarkService` 与 `RepeatedBenchmarkService` 默认启用进程隔离；嵌入式调用或测试可显式传入 `isolate_model_processes=False` 关闭。对 `keep_in_memory=false` 的模型：
-
-- 单轮 benchmark 在独立 `spawn` worker 中完成 load → infer → WAV write → unload。
-- Standard Suite 以一个 `case/model` 为 worker 粒度，在同一子进程完成 warm-up + repeated measurements。
-- WAV 直接写到主进程预先校验的 `exports/<run_id>/audio/` 路径，multiprocessing queue 只回传 metrics / metadata / error。
-- 单轮 hard timeout 使用 `inference_timeout_sec`；Suite group timeout 为 `inference_timeout_sec × (warmup + measured)`。
-- timeout 返回 `3001 inference_timeout`；异常退出返回 `3002 worker_exited`，主服务继续运行。
-- 每个 isolated result 增加 `worker` 诊断：PID、exit code、elapsed、termination、signal、`oom_suspected`。
-- worker 内显式 `MemoryError` 映射为 `2002 worker_memory_error`；无返回的 `SIGKILL` 只标记“possible OOM or external kill”。
-- `keep_in_memory=true` 暂继续进程内执行并返回显式 warning，不伪装为已经具备 hard process timeout。
-
-
-
 ## Stage 6 第二批模型
 
-第二批 Adapter 已完成 contract integration，但默认保持 disabled/experimental，尚未计为真实 CPU gate：
+- **MeloTTS**：独立 Ubuntu x86_64 / Python 3.10 CPU synthesis gate 已通过；仍保持 `experimental + disabled`。
+- **CosyVoice 300M SFT**：独立 Ubuntu x86_64 / Python 3.10 CPU gate 已通过。Gate 使用 2 threads，生成 4.098s WAV，单次 inference 17.875s、RTF 4.362、peak RSS 4181 MB；该记录只用于可复现 gate 追溯，不作为性能承诺。
+- CosyVoice `wetext==0.0.4` 所需 5 个 FST 通过 `scripts/prepare_cosyvoice_frontend.py` 在安装准备阶段显式下载并写入 SHA-256 manifest；offline preflight 会把 `snapshot_download()` 替换为调用即失败，再验证 Adapter 仍可从本地 FST 加载。
 
-- **CosyVoice 300M SFT**：面向官方 QwenAudio/CosyVoice `AutoModel + inference_sft()`；支持固定 speaker、speed 与真实 chunk streaming。当前只接 SFT 模式，不把 CosyVoice2/3 需要 prompt audio/text 的 zero-shot 路径硬塞进现有 voice-id schema。运行时需单独安装官方 source checkout。
-- **MeloTTS**：面向官方 `melo.api.TTS`；支持 EN/ES/FR/ZH/JP/KR、speaker id 与 speed。为保证 benchmark 可复现，Adapter 禁止隐式 HuggingFace 下载，要求本地 `model.json` 显式指向 config/checkpoint。
+第二批模型暂不建议直接安装进主 Arena UI venv。后续模型专用 worker/venv 隔离完成后，再考虑在同一 UI 中正式启用。
 
-配置中新增 `cosyvoice-300m-sft` 与 `melotts-zh`，均 `enabled: false`、`experimental: true`。只有完成可复现真实 CPU synthesis CI 后才会把对应 real-model gate 标记完成。
+## Stage 6 Hardening
 
+已完成：
 
-## Extended Model Gates
+- Windows/macOS/Linux 本地部署 Doctor + Dummy/API/spawn smoke
+- Python 3.10/3.11/3.12 主测试矩阵
+- 原生 ARM64 hosted smoke
+- GitHub-hosted 1-CPU 资源预算 smoke
+- Concurrent CPU/内存公平预算与 `pressure` profile
+- 非持久模型进程级 watchdog、timeout/crash 回收、worker 退出/OOM 诊断
+- Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate（后两者为独立 extended gate）
 
-CosyVoice/MeloTTS 的真实 CPU 验证不进入每次 push 的主 CI。仓库提供手动 `Extended Model Gates` workflow，可选择 `melotts`、`cosyvoice` 或 `both`。验证统一通过 `scripts/real_model_smoke.py` 输出 WAV 与 JSON metrics artifact。
-
-该 workflow 只是可复现 gate；在实际 GitHub Actions run 成功前，两个模型仍保持 `experimental + disabled`，不标记为 real CPU verified。
-
-
-## Stage 6 ARM / 低资源验证
-
-- GitHub Actions `ubuntu-24.04-arm` 原生 ARM64 Dummy + spawn worker smoke 已通过。
-- `ubuntu-slim` 1-CPU runner 已验证 sequential 自动降为 1 thread，并在 2-model Concurrent 启动前返回 `concurrent_cpu_budget`。
-- Python 3.10–3.12 下 ResourceGuard 除 affinity 外还读取 Linux cgroup v2 `cpu.max` 与 v1 CPU quota，避免容器看到宿主机更多 CPU 后超配。
-- `cpu_effective_cores` 与 `available_ram_effective_gb` 进入 system/environment snapshot，便于 benchmark 复现。
-- ResourceGuard 同时读取 cgroup v2 `memory.max/memory.current` 与 v1 memory limit/usage，避免容器把宿主机空闲内存误当成自身预算。
+剩余重点：真实 ARM/弱算力目标设备实机验证，以及扩展模型的正式独立 worker/venv 集成。
