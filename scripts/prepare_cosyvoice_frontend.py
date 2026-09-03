@@ -27,9 +27,11 @@ def _download_selected_wetext_assets(output: Path, *, attempts: int = 3) -> None
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
+            # Do not force revision='master' on modelscope==1.20.0. For this
+            # public model that path enters revision validation which may require
+            # a token. Let the pinned SDK resolve its default public revision.
             snapshot_download(
                 "pengzhendong/wetext",
-                revision="master",
                 allow_file_pattern=list(WETEXT_REQUIRED_FILES),
                 local_dir=str(output),
             )
@@ -58,7 +60,8 @@ def prepare_wetext(output: Path) -> dict[str, object]:
     root = validate_wetext_assets(output)
     files = {relative: sha256_file(root / relative) for relative in WETEXT_REQUIRED_FILES}
     manifest = {
-        "source": "ModelScope:pengzhendong/wetext@master",
+        "source": "ModelScope:pengzhendong/wetext",
+        "revision_resolution": "modelscope==1.20.0 default public revision",
         "download_mode": "selective allow_file_pattern",
         "purpose": "CosyVoice wetext==0.0.4 offline TN frontend",
         "files": files,

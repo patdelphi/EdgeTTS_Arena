@@ -1,2 +1,2 @@
-gate=5
-reason=selective-wetext-assets
+gate=6
+reason=anonymous-selective-wetext-assets
