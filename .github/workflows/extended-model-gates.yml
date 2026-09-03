@@ -1,0 +1,108 @@
+name: Extended Model Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Heavy model gate to run"
+        required: true
+        default: melotts
+        type: choice
+        options:
+          - melotts
+          - cosyvoice
+          - both
+
+jobs:
+  melotts-cpu-smoke:
+    if: ${{ inputs.model == 'melotts' || inputs.model == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install project and pinned MeloTTS source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install "git+https://github.com/myshell-ai/MeloTTS.git@209145371cff8fc3bd60d7be902ea69cbdb7965a"
+      - name: Prepare Chinese model files
+        run: |
+          mkdir -p models/melotts/zh exports/extended-gates
+          curl -fL --retry 3 -o models/melotts/zh/config.json \
+            https://myshell-public-repo-host.s3.amazonaws.com/openvoice/basespeakers/ZH/config.json
+          curl -fL --retry 3 -o models/melotts/zh/checkpoint.pth \
+            https://myshell-public-repo-host.s3.amazonaws.com/openvoice/basespeakers/ZH/checkpoint.pth
+          cat > models/melotts/zh/model.json <<'JSON'
+          {"language":"ZH","config_path":"config.json","ckpt_path":"checkpoint.pth"}
+          JSON
+      - name: Real MeloTTS CPU synthesis
+        run: |
+          python scripts/real_model_smoke.py melotts \
+            --model-path models/melotts/zh/model.json \
+            --text "你好，这是一条 EdgeTTS Arena 的 MeloTTS CPU 验证语音。" \
+            --threads 2 \
+            --output exports/extended-gates/melotts.wav \
+            --report exports/extended-gates/melotts.json
+          test -s exports/extended-gates/melotts.wav
+          test -s exports/extended-gates/melotts.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: melotts-cpu-smoke
+          path: exports/extended-gates/
+
+  cosyvoice-cpu-smoke:
+    if: ${{ inputs.model == 'cosyvoice' || inputs.model == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install OS dependencies
+        run: sudo apt-get update && sudo apt-get install -y sox libsox-dev
+      - name: Checkout pinned CosyVoice source
+        run: |
+          git clone --recursive https://github.com/QwenAudio/CosyVoice.git vendor/CosyVoice
+          cd vendor/CosyVoice
+          git checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+          git submodule update --init --recursive
+      - name: Install project and CosyVoice runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install -r vendor/CosyVoice/requirements.txt
+          python -m pip install huggingface_hub
+      - name: Download CosyVoice 300M SFT model
+        env:
+          HF_HOME: ${{ runner.temp }}/hf-cache
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              'FunAudioLLM/CosyVoice-300M-SFT',
+              local_dir='models/cosyvoice/CosyVoice-300M-SFT',
+          )
+          PY
+      - name: Real CosyVoice CPU synthesis
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
+        run: |
+          mkdir -p exports/extended-gates
+          python scripts/real_model_smoke.py cosyvoice \
+            --model-path models/cosyvoice/CosyVoice-300M-SFT \
+            --text "你好，这是一条 EdgeTTS Arena 的 CosyVoice CPU 验证语音。" \
+            --threads 2 \
+            --output exports/extended-gates/cosyvoice.wav \
+            --report exports/extended-gates/cosyvoice.json
+          test -s exports/extended-gates/cosyvoice.wav
+          test -s exports/extended-gates/cosyvoice.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosyvoice-cpu-smoke
+          path: exports/extended-gates/

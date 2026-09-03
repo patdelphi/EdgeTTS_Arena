@@ -185,3 +185,10 @@ GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + Fast
 - **MeloTTS**：面向官方 `melo.api.TTS`；支持 EN/ES/FR/ZH/JP/KR、speaker id 与 speed。为保证 benchmark 可复现，Adapter 禁止隐式 HuggingFace 下载，要求本地 `model.json` 显式指向 config/checkpoint。
 
 配置中新增 `cosyvoice-300m-sft` 与 `melotts-zh`，均 `enabled: false`、`experimental: true`。只有完成可复现真实 CPU synthesis CI 后才会把对应 real-model gate 标记完成。
+
+
+## Extended Model Gates
+
+CosyVoice/MeloTTS 的真实 CPU 验证不进入每次 push 的主 CI。仓库提供手动 `Extended Model Gates` workflow，可选择 `melotts`、`cosyvoice` 或 `both`。验证统一通过 `scripts/real_model_smoke.py` 输出 WAV 与 JSON metrics artifact。
+
+该 workflow 只是可复现 gate；在实际 GitHub Actions run 成功前，两个模型仍保持 `experimental + disabled`，不标记为 real CPU verified。
