@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import platform
+import sys
 from pathlib import Path
 
 from edgetts_arena.adapters import DummyTTSAdapter, KokoroTTSAdapter, PiperTTSAdapter
@@ -16,6 +19,10 @@ from edgetts_arena.utils import write_wav
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="edgetts-arena")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    doctor = subparsers.add_parser("doctor", help="validate the local deployment baseline")
+    doctor.add_argument("--ui", action="store_true", help="also validate Gradio UI mounting")
+    doctor.add_argument("--exports-root", type=Path, default=Path("exports"))
 
     dummy = subparsers.add_parser("dummy", help="generate a deterministic dummy WAV")
     dummy.add_argument("--text", default="EdgeTTS Arena smoke test")
@@ -57,10 +64,84 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def collect_doctor_report(*, exports_root: Path, check_ui: bool = False) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+
+    def record(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    py_ok = (3, 10) <= sys.version_info[:2] < (3, 13)
+    record("python", py_ok, platform.python_version())
+
+    try:
+        settings = load_settings()
+        record("config", True, f"host={settings.host} port={settings.port}")
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        settings = None
+        record("config", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        exports_root.mkdir(parents=True, exist_ok=True)
+        probe = exports_root / ".edgetts-arena-doctor"
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink()
+        record("exports_writable", True, str(exports_root.resolve()))
+    except Exception as exc:
+        record("exports_writable", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        adapter = DummyTTSAdapter()
+        adapter.load_model(num_threads=1)
+        output = adapter.infer("local deployment doctor", seed=0)
+        record(
+            "dummy_synthesis",
+            bool(output.audio.size and output.sample_rate > 0),
+            f"samples={output.audio.size} sample_rate={output.sample_rate}",
+        )
+    except Exception as exc:
+        record("dummy_synthesis", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        from edgetts_arena.api.app import create_app
+
+        app = create_app(exports_root=str(exports_root))
+        routes = {route.path for route in app.routes}
+        required = {"/healthz", "/api/v1/system/models", "/api/v1/benchmark/run"}
+        missing = sorted(required - routes)
+        record("fastapi_app", not missing, "routes ok" if not missing else f"missing routes: {missing}")
+    except Exception as exc:
+        record("fastapi_app", False, f"{type(exc).__name__}: {exc}")
+
+    if check_ui:
+        try:
+            from edgetts_arena.ui.gradio_app import create_full_app
+
+            ui_app = create_full_app(exports_root=str(exports_root))
+            route_paths = {route.path for route in ui_app.routes}
+            mounted = any(path.startswith("/arena") for path in route_paths)
+            record("gradio_ui", mounted, "mounted at /arena" if mounted else "Arena route not mounted")
+        except Exception as exc:
+            record("gradio_ui", False, f"{type(exc).__name__}: {exc}")
+
+    ready = all(bool(check["ok"]) for check in checks)
+    return {
+        "ready": ready,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "ui_requested": check_ui,
+        "checks": checks,
+    }
+
+
 def main() -> int:
     args = build_parser().parse_args()
     settings = load_settings()
     configure_logging(settings.log_level)
+
+    if args.command == "doctor":
+        report = collect_doctor_report(exports_root=args.exports_root, check_ui=args.ui)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["ready"] else 1
 
     if args.command == "dummy":
         adapter = DummyTTSAdapter()

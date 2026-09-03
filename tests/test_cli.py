@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -30,6 +31,42 @@ def test_module_cli_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert output.exists()
     assert output.stat().st_size > 44
+
+
+def test_doctor_cli_core_baseline(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "edgetts_arena",
+            "doctor",
+            "--exports-root",
+            str(tmp_path / "exports"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ready"] is True
+    checks = {item["name"]: item for item in report["checks"]}
+    assert checks["dummy_synthesis"]["ok"] is True
+    assert checks["fastapi_app"]["ok"] is True
+    assert checks["exports_writable"]["ok"] is True
+
+
+def test_doctor_parser_supports_ui() -> None:
+    from edgetts_arena.cli import build_parser
+
+    args = build_parser().parse_args(["doctor", "--ui", "--exports-root", "doctor-out"])
+    assert args.command == "doctor"
+    assert args.ui is True
+    assert args.exports_root == Path("doctor-out")
 
 
 def test_piper_cli_parser_requires_model() -> None:
