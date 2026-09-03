@@ -187,7 +187,13 @@ class RepeatedBenchmarkService:
                     "warmup_runs": warmup_runs, "measured_runs": measured_runs,
                 }
                 try:
-                    result = self.process_runner.run(run_isolated_repeated_model, task, timeout_sec=timeout)
+                    if record.spec.worker_python:
+                        warnings.append(f"{model_id}: using dedicated external Python worker")
+                        result = self.process_runner.run_external_worker(
+                            record.spec.worker_python, "repeated", task, timeout_sec=timeout
+                        )
+                    else:
+                        result = self.process_runner.run(run_isolated_repeated_model, task, timeout_sec=timeout)
                 except ProcessTimeoutError as exc:
                     path.unlink(missing_ok=True)
                     return self._error(

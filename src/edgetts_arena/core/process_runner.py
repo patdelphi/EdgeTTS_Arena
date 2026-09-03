@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
+import os
+from pathlib import Path
 import queue
 import signal
+import subprocess
 import time
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
+
+_EXTERNAL_RESULT_PREFIX = "__EDGETTS_ARENA_RESULT__="
 
 
 def _exit_diagnostics(exit_code: int | None) -> tuple[str, str | None, bool]:
@@ -105,7 +111,7 @@ def _worker_entry(
 
 
 class ProcessRunner:
-    """Runs picklable callables in a terminable child process."""
+    """Runs isolated model work in either the current Python or a dedicated venv Python."""
 
     def __init__(self, *, start_method: str = "spawn") -> None:
         self._context = mp.get_context(start_method)
@@ -188,6 +194,135 @@ class ProcessRunner:
             error_type=error_type,
             error_message=error_message,
             traceback=tb,
+            exit_code=exit_code,
+            pid=pid,
+            elapsed_ms=elapsed_ms,
+            termination=termination,
+            signal_name=signal_name,
+            oom_suspected=oom_suspected,
+        )
+
+    def run_external_worker(
+        self,
+        python_executable: str,
+        mode: str,
+        task: dict[str, Any],
+        *,
+        timeout_sec: float,
+    ) -> ProcessResult:
+        """Run the JSON worker protocol under another Python interpreter/venv."""
+        if timeout_sec <= 0:
+            raise ValueError("timeout_sec must be positive")
+        if mode not in {"single", "repeated"}:
+            raise ValueError("external worker mode must be 'single' or 'repeated'")
+        executable = str(python_executable).strip()
+        if not executable:
+            raise ValueError("python_executable must not be empty")
+
+        env = os.environ.copy()
+        src_root = str(Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = src_root + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+        )
+        started = time.perf_counter()
+        try:
+            process = subprocess.Popen(
+                [executable, "-m", "edgetts_arena.core.external_worker", mode],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+            )
+        except OSError as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            return ProcessResult(
+                status="error",
+                error_type=type(exc).__name__,
+                error_message=f"failed to start external worker: {exc}",
+                elapsed_ms=elapsed_ms,
+                termination="spawn_error",
+            )
+
+        pid = process.pid
+        try:
+            stdout, stderr = process.communicate(
+                json.dumps(task, ensure_ascii=False), timeout=timeout_sec
+            )
+        except subprocess.TimeoutExpired:
+            termination = "timeout_terminate"
+            process.terminate()
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                termination = "timeout_kill"
+                process.kill()
+                process.wait(timeout=2.0)
+            exit_code = process.returncode
+            _, signal_name, _ = _exit_diagnostics(exit_code)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            raise ProcessTimeoutError(
+                f"external worker exceeded timeout of {timeout_sec:.3f}s",
+                pid=pid,
+                exit_code=exit_code,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+            )
+
+        exit_code = process.returncode
+        termination, signal_name, oom_suspected = _exit_diagnostics(exit_code)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if exit_code != 0:
+            return ProcessResult(
+                status="error",
+                error_type="ExternalWorkerExited",
+                error_message=(stderr.strip() or f"external worker exited with code {exit_code}"),
+                traceback=stderr or None,
+                exit_code=exit_code,
+                pid=pid,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+                oom_suspected=oom_suspected,
+            )
+
+        result_line = next(
+            (line for line in reversed(stdout.splitlines()) if line.startswith(_EXTERNAL_RESULT_PREFIX)),
+            None,
+        )
+        if result_line is None:
+            return ProcessResult(
+                status="error",
+                error_type="ExternalWorkerProtocolError",
+                error_message="external worker completed without a result frame",
+                traceback=stderr or None,
+                exit_code=exit_code,
+                pid=pid,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+                oom_suspected=oom_suspected,
+            )
+        try:
+            value = json.loads(result_line[len(_EXTERNAL_RESULT_PREFIX):])
+        except json.JSONDecodeError as exc:
+            return ProcessResult(
+                status="error",
+                error_type="ExternalWorkerProtocolError",
+                error_message=f"invalid external worker result JSON: {exc}",
+                traceback=stderr or None,
+                exit_code=exit_code,
+                pid=pid,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+                oom_suspected=oom_suspected,
+            )
+        return ProcessResult(
+            status="success",
+            value=value,
             exit_code=exit_code,
             pid=pid,
             elapsed_ms=elapsed_ms,

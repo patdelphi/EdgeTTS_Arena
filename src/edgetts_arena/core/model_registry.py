@@ -30,6 +30,7 @@ class ModelSpec:
     keep_in_memory: bool = False
     num_threads: int = 4
     experimental: bool = False
+    worker_python: str = ""
 
 
 @dataclass(slots=True)
@@ -100,6 +101,7 @@ class ModelRegistry:
                 keep_in_memory=bool(item.get("keep_in_memory", False)),
                 num_threads=int(item.get("num_threads", 4)),
                 experimental=bool(item.get("experimental", False)),
+                worker_python=str(item.get("worker_python", "") or ""),
             )
             for item in models
         ]

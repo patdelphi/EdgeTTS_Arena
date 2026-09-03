@@ -43,6 +43,7 @@ models:
     keep_in_memory: false
     num_threads: 4
     experimental: true
+    worker_python: ""
 
   - id: melotts-zh
     name: MeloTTS Chinese
@@ -52,3 +53,4 @@ models:
     keep_in_memory: false
     num_threads: 4
     experimental: true
+    worker_python: ""

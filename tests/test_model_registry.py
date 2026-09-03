@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from edgetts_arena.core import ModelRegistry, ModelStatus
 
 
@@ -32,3 +34,21 @@ def test_registry_keeps_qwen3_experimental_disabled() -> None:
     assert item["experimental"] is True
     assert item["status"] == "unavailable"
     assert item["capabilities"]["voice_clone"] is False
+
+
+def test_registry_reads_dedicated_worker_python(tmp_path: Path) -> None:
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "models:\n"
+        "  - id: isolated-dummy\n"
+        "    name: Isolated Dummy\n"
+        "    adapter: dummy\n"
+        "    enabled: true\n"
+        "    keep_in_memory: false\n"
+        "    worker_python: /opt/arena-venvs/dummy/bin/python\n",
+        encoding="utf-8",
+    )
+    registry = ModelRegistry.from_yaml(config)
+    record = registry.get_record("isolated-dummy")
+    assert record.spec.worker_python == "/opt/arena-venvs/dummy/bin/python"
+    assert record.status == ModelStatus.UNLOADED

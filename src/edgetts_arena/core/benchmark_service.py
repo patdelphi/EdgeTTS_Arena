@@ -184,9 +184,18 @@ class BenchmarkService:
                     "audio_path": str(path),
                 }
                 try:
-                    process_result = self.process_runner.run(
-                        run_isolated_model, task, timeout_sec=self.inference_timeout_sec
-                    )
+                    if record.spec.worker_python:
+                        warnings.append(f"{model_id}: using dedicated external Python worker")
+                        process_result = self.process_runner.run_external_worker(
+                            record.spec.worker_python,
+                            "single",
+                            task,
+                            timeout_sec=self.inference_timeout_sec,
+                        )
+                    else:
+                        process_result = self.process_runner.run(
+                            run_isolated_model, task, timeout_sec=self.inference_timeout_sec
+                        )
                 except ProcessTimeoutError as exc:
                     path.unlink(missing_ok=True)
                     return {
