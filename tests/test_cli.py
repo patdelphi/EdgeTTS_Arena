@@ -41,3 +41,14 @@ def test_piper_cli_parser_requires_model() -> None:
     assert args.command == "piper"
     assert args.model == Path("voice.onnx")
     assert args.speed == 1.25
+
+
+def test_kokoro_cli_parser() -> None:
+    from edgetts_arena.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["kokoro", "--model", "kokoro-v1.0.int8.onnx", "--voice", "af_heart"]
+    )
+    assert args.command == "kokoro"
+    assert args.model == Path("kokoro-v1.0.int8.onnx")
+    assert args.voice == "af_heart"
