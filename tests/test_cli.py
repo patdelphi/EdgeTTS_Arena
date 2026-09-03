@@ -64,6 +64,7 @@ def test_doctor_cli_core_baseline(tmp_path: Path) -> None:
 
 def test_doctor_cli_validates_external_worker_protocol(tmp_path: Path) -> None:
     env = _cli_env()
+    env["EDGETTS_ARENA_QWEN3_PYTHON"] = sys.executable
     env["EDGETTS_ARENA_COSYVOICE_PYTHON"] = sys.executable
     env["EDGETTS_ARENA_MELOTTS_PYTHON"] = sys.executable
     result = subprocess.run(
@@ -86,6 +87,7 @@ def test_doctor_cli_validates_external_worker_protocol(tmp_path: Path) -> None:
     assert report["ready"] is True
     assert report["workers_requested"] is True
     checks = {item["name"]: item for item in report["checks"]}
+    assert checks["worker:qwen3-tts-0.6b"]["ok"] is True
     assert checks["worker:cosyvoice-300m-sft"]["ok"] is True
     assert checks["worker:melotts-zh"]["ok"] is True
 
