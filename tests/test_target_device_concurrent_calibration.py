@@ -24,6 +24,7 @@ def _args(tmp_path: Path, **overrides):
         "max_concurrent_rtf": 2.0,
         "max_concurrent_peak_rss_mb": 4000.0,
         "no_zip": False,
+        "overwrite": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -138,3 +139,25 @@ def test_concurrent_calibration_records_partial_failure(tmp_path: Path) -> None:
     assert report["passed"] is False
     assert report["checks"][0]["name"] == "all_pairs_successful"
     assert report["pairs"][0]["success"] is False
+
+
+def test_concurrent_calibration_rejects_stale_output_by_default(tmp_path: Path) -> None:
+    args = _args(tmp_path, runs=1)
+    run_calibration(args, benchmark_runner=_runner_factory())
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        run_calibration(args, benchmark_runner=_runner_factory())
+
+
+def test_concurrent_calibration_overwrite_cleans_stale_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "calibration"
+    root.mkdir(parents=True)
+    stale = root / "stale.json"
+    stale.write_text("{}", encoding="utf-8")
+    root.with_suffix(".zip").write_bytes(b"old archive")
+
+    report = run_calibration(
+        _args(tmp_path, runs=1, overwrite=True), benchmark_runner=_runner_factory()
+    )
+    assert report["passed"] is True
+    assert not stale.exists()
+    assert Path(report["archive"]).is_file()
