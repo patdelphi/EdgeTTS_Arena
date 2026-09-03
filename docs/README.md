@@ -1,7 +1,7 @@
 # EdgeTTS-Arena 文档
 
-> 文档基线：v0.5（2026-09-03）  
-> 当前状态：**Stage 0~5 已实现；Stage 6 已完成跨平台/ARM64/1-CPU hosted smoke、cgroup-aware CPU/内存预算、非持久模型 watchdog、Piper/Kokoro 主线真实 CPU gate、MeloTTS/CosyVoice 独立真实 CPU gate，以及扩展模型 external Python/venv worker 路由。Qwen3-TTS 0.6B 已从 placeholder 升级为官方 qwen-tts CPU Adapter，并具备本地资产准备与 manual heavy gate；其真实 heavy CPU synthesis 尚待验证。主 Arena 已达到本地部署测试条件。**
+> 文档基线：v0.6（2026-09-03）  
+> 当前状态：**Stage 0~5 已实现；Stage 6 已完成跨平台/ARM64/1-CPU hosted smoke、cgroup-aware CPU/内存预算、非持久模型 watchdog、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external Python/venv worker，以及 Qwen3-TTS 0.6B CustomVoice 官方 qwen-tts hosted CPU synthesis gate。主 Arena 已达到本地部署测试条件。Qwen3 下一阶段转向 quantization / low-memory CPU route。**
 
 开发入口：
 
@@ -21,7 +21,7 @@
 
 - `src/edgetts_arena/`
 - `edgetts-arena serve` / optional `serve --ui`
-- `edgetts-arena doctor` / `doctor --ui` / `doctor --workers`
+- `edgetts-arena doctor` / `doctor --ui` / `doctor --workers` / `doctor --worker MODEL_ID`
 - `GET /api/v1/system/models`
 - `POST /api/v1/benchmark/run`
 - `GET /api/v1/benchmark/presets`
@@ -33,10 +33,10 @@
 - TTFB 仅真流式有效
 - Blind AB 写入 `blind_scores.json`
 - 主 Arena 本地部署范围：Dummy + Piper + Kokoro
-- Qwen3：官方 `qwen-tts` 0.6B CustomVoice CPU Adapter 已实现；真实 heavy CPU gate pending；继续默认 `experimental + disabled`
+- Qwen3：官方 `qwen-tts` 0.6B CustomVoice CPU Adapter + hosted real CPU gate 已通过；FP32 2-thread baseline RTF 5.315 / peak RSS 5317.8MB；继续默认 `experimental + disabled`，下一步量化/低内存优化
 - MeloTTS 与 CosyVoice 300M SFT real CPU gate 已通过，继续默认 `experimental + disabled`
-- 扩展模型 runtime：通过 `worker_python` / `worker_python_env` 使用专用 external Python worker，避免污染主 UI venv
+- 扩展模型 runtime：通过 `worker_python` / `worker_python_env` 使用专用 external Python worker
 - 默认环境变量：`EDGETTS_ARENA_QWEN3_PYTHON`、`EDGETTS_ARENA_COSYVOICE_PYTHON`、`EDGETTS_ARENA_MELOTTS_PYTHON`
 - `/system/models` 返回 `worker_mode` / `worker_python_configured`，不返回本机解释器绝对路径
-- CosyVoice WeText：安装准备阶段显式下载本地 FST；推理/load 阶段不得隐式 `snapshot_download()`
+- CosyVoice WeText：安装准备阶段显式下载本地 FST；推理/load 阶段不得隐式下载
 - Qwen3 模型资产：`scripts/prepare_qwen3_model.py` 下载解析后的固定 revision 并生成 `asset_manifest.json`；benchmark 运行阶段只读取本地路径
