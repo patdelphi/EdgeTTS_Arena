@@ -26,34 +26,9 @@ jobs:
           git -C vendor/CosyVoice submodule update --init --recursive
       - name: Build CPU-only CosyVoice requirements
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          source = Path('vendor/CosyVoice/requirements.txt')
-          target = Path('vendor/CosyVoice/requirements.cpu.txt')
-          blocked = (
-              '--extra-index-url',
-              'deepspeed==',
-              'onnxruntime-gpu==',
-              'tensorrt-cu12',
-              'torch==',
-              'torchaudio==',
-              'openai-whisper==',
-          )
-          kept, removed = [], []
-          for raw in source.read_text(encoding='utf-8').splitlines():
-              stripped = raw.strip()
-              if stripped.startswith(blocked):
-                  removed.append(stripped)
-              else:
-                  kept.append(raw)
-          target.write_text('\n'.join(kept) + '\n', encoding='utf-8')
-          print('Removed GPU/runtime-specific requirements:')
-          print('\n'.join(removed))
-          assert any(line.startswith('onnxruntime-gpu==') for line in removed)
-          assert any(line.startswith('torch==') for line in removed)
-          assert any(line.startswith('tensorrt-cu12') for line in removed)
-          assert any(line.startswith('openai-whisper==') for line in removed)
-          PY
+          python scripts/prepare_cosyvoice_cpu_requirements.py \
+            --source vendor/CosyVoice/requirements.txt \
+            --output vendor/CosyVoice/requirements.cpu.txt
       - name: Install project and CPU-only CosyVoice runtime
         run: |
           python -m pip install --upgrade pip
@@ -81,19 +56,13 @@ jobs:
           print('onnxruntime:', ort.__version__, providers)
           print('whisper:', whisper.__file__)
           PY
-      - name: Download pinned CosyVoice 300M SFT model
+      - name: Prepare pinned CosyVoice 300M SFT model
         env:
           HF_HOME: ${{ runner.temp }}/hf-cache
         run: |
           mkdir -p models/cosyvoice exports/extended-gates
-          python - <<'PY'
-          from huggingface_hub import snapshot_download
-          snapshot_download(
-              'FunAudioLLM/CosyVoice-300M-SFT',
-              revision='fbb71de2afe387ed854eebd80b9f3d078c6b9869',
-              local_dir='models/cosyvoice/CosyVoice-300M-SFT',
-          )
-          PY
+          python scripts/prepare_cosyvoice_model.py --output models/cosyvoice/CosyVoice-300M-SFT
+          test -s models/cosyvoice/CosyVoice-300M-SFT/asset_manifest.json
       - name: Prepare local WeText frontend assets
         run: |
           python scripts/prepare_cosyvoice_frontend.py --output models/cosyvoice/wetext
@@ -136,4 +105,5 @@ jobs:
           name: cosyvoice-cpu-smoke
           path: |
             exports/extended-gates/
+            models/cosyvoice/CosyVoice-300M-SFT/asset_manifest.json
             models/cosyvoice/wetext/asset_manifest.json
