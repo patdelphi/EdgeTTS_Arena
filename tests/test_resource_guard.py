@@ -74,3 +74,33 @@ def test_concurrent_plan_rejects_memory_and_model_budget() -> None:
     with pytest.raises(ArenaError) as exc_info:
         enough.plan_execution(execution_mode="concurrent", model_count=3, requested_threads_per_model=2)
     assert exc_info.value.error_type == "concurrent_model_limit"
+
+
+def test_effective_cpu_count_prefers_process_budget(monkeypatch) -> None:
+    import edgetts_arena.core.resource_guard as module
+
+    monkeypatch.setattr(module.os, "process_cpu_count", lambda: 2, raising=False)
+    monkeypatch.setattr(module.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
+    assert module.effective_cpu_count() == 2
+
+
+def test_single_core_rejects_multi_model_concurrent_budget() -> None:
+    guard = ResourceGuard(
+        ResourceGuardSettings(
+            min_available_memory_mb_soft=500,
+            min_available_memory_mb_hard=250,
+            min_available_memory_mb_per_concurrent_model=100,
+            max_concurrent_models=4,
+        ),
+        available_memory_provider=lambda: 4096 * MB,
+        cpu_count_provider=lambda: 1,
+    )
+    sequential = guard.plan_execution(
+        execution_mode="sequential", model_count=1, requested_threads_per_model=8
+    )
+    assert sequential.threads_per_model == 1
+    with pytest.raises(ArenaError) as exc_info:
+        guard.plan_execution(
+            execution_mode="concurrent", model_count=2, requested_threads_per_model=1
+        )
+    assert exc_info.value.error_type == "concurrent_cpu_budget"

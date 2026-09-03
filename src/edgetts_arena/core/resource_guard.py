@@ -10,6 +10,29 @@ from edgetts_arena.core.config import ResourceGuardSettings
 from edgetts_arena.core.errors import ArenaError
 
 
+def effective_cpu_count() -> int:
+    """Return CPUs effectively available to this process, not just host CPUs."""
+    process_count = getattr(os, "process_cpu_count", None)
+    if callable(process_count):
+        try:
+            value = process_count()
+            if value:
+                return max(1, int(value))
+        except (OSError, TypeError, ValueError):
+            pass
+
+    affinity = getattr(os, "sched_getaffinity", None)
+    if callable(affinity):
+        try:
+            value = len(affinity(0))
+            if value:
+                return max(1, int(value))
+        except (OSError, TypeError, ValueError):
+            pass
+
+    return max(1, int(os.cpu_count() or 1))
+
+
 @dataclass(frozen=True, slots=True)
 class ResourceAssessment:
     available_memory_mb: float
@@ -58,7 +81,7 @@ class ResourceGuard:
     ) -> None:
         self.settings = settings
         self._available_memory_provider = available_memory_provider or (lambda: psutil.virtual_memory().available)
-        self._cpu_count_provider = cpu_count_provider or os.cpu_count
+        self._cpu_count_provider = cpu_count_provider or effective_cpu_count
 
     def assess(self, *, execution_mode: str = "sequential") -> ResourceAssessment:
         available_mb = self._available_memory_provider() / (1024 * 1024)
@@ -131,6 +154,12 @@ class ResourceGuard:
                 2001,
                 f"concurrent model count {model_count} exceeds configured maximum {self.settings.max_concurrent_models}",
                 error_type="concurrent_model_limit",
+            )
+        if model_count > logical:
+            raise ArenaError(
+                2001,
+                f"concurrent model count {model_count} exceeds effective CPU budget of {logical} cores",
+                error_type="concurrent_cpu_budget",
             )
 
         minimum_memory = max(

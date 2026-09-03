@@ -50,6 +50,58 @@ jobs:
         run: >-
           python -c "from pathlib import Path; from fastapi.testclient import TestClient; from edgetts_arena.api import create_app; p=Path('exports/cross-platform.wav'); assert p.is_file() and p.stat().st_size > 44; c=TestClient(create_app()); assert c.get('/healthz').status_code == 200; assert c.get('/api/v1/benchmark/presets').status_code == 200"
 
+  arm64-smoke:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install core runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Native ARM64 Dummy and spawn smoke
+        run: |
+          python -c "import platform; assert platform.machine().lower() in {'aarch64','arm64'}, platform.machine()"
+          python -m edgetts_arena dummy --text "native arm64 smoke" --output exports/arm64.wav
+          pytest -q tests/test_watchdog.py::test_repeated_suite_uses_spawn_worker_and_writes_representative_audio
+          test -s exports/arm64.wav
+
+  low-resource-smoke:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install core runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Verify 1-CPU resource behavior
+        run: |
+          python - <<'PY'
+          from edgetts_arena.core.config import ResourceGuardSettings
+          from edgetts_arena.core.errors import ArenaError
+          from edgetts_arena.core.resource_guard import ResourceGuard, effective_cpu_count
+          cores = effective_cpu_count()
+          assert cores == 1, cores
+          guard = ResourceGuard(ResourceGuardSettings())
+          seq = guard.plan_execution(execution_mode='sequential', model_count=1, requested_threads_per_model=8)
+          assert seq.threads_per_model == 1
+          try:
+              guard.plan_execution(execution_mode='concurrent', model_count=2, requested_threads_per_model=1)
+          except ArenaError as exc:
+              assert exc.error_type == 'concurrent_cpu_budget'
+          else:
+              raise AssertionError('expected concurrent_cpu_budget')
+          PY
+          python -m edgetts_arena dummy --text "one cpu smoke" --output exports/one-cpu.wav
+          test -s exports/one-cpu.wav
+
   ui-smoke:
     runs-on: ubuntu-latest
     steps:
