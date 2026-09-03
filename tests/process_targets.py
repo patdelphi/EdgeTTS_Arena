@@ -1,3 +1,5 @@
+import os
+import signal
 import time
 
 
@@ -12,3 +14,11 @@ def fail() -> None:
 def sleep_for(seconds: float) -> str:
     time.sleep(seconds)
     return "done"
+
+
+def hard_exit(code: int) -> None:
+    os._exit(code)
+
+
+def sigkill_self() -> None:
+    os.kill(os.getpid(), signal.SIGKILL)

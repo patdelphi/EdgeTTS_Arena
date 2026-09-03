@@ -147,7 +147,7 @@ Qwen3 当前仍为受控 placeholder：默认 disabled/unavailable，不绑定�
 
 ## 下一阶段
 
-**Stage 6 — Hardening（进行中）**：已加入 Windows/macOS/Linux Dummy+API smoke、Concurrent CPU/内存预算与 `execution_profile=pressure` 报告隔离，并完成非持久模型的进程级 watchdog：单轮 benchmark 与 Standard Suite 均可在 hard timeout 后终止 worker；worker crash/timeout 分别归一化为 `3002` / `3001`。下一步继续 OOM 识别恢复、第二批模型与弱算力设备验证。
+**Stage 6 — Hardening（进行中）**：已加入 Windows/macOS/Linux smoke、Concurrent CPU/内存预算、进程级 watchdog 与 worker 退出诊断。单轮 benchmark 与 Standard Suite 均可在 hard timeout 后终止 worker；显式 `MemoryError` → `2002`，worker crash/timeout → `3002` / `3001`。`SIGKILL` 只标记 `oom_suspected=true`，不在缺少内核证据时伪称确定 OOM。下一步继续第二批模型与弱算力设备验证。
 
 
 ## Stage 6 Hardening（第一批）
@@ -171,4 +171,7 @@ GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + Fast
 - WAV 直接写到主进程预先校验的 `exports/<run_id>/audio/` 路径，multiprocessing queue 只回传 metrics / metadata / error。
 - 单轮 hard timeout 使用 `inference_timeout_sec`；Suite group timeout 为 `inference_timeout_sec × (warmup + measured)`。
 - timeout 返回 `3001 inference_timeout`；异常退出返回 `3002 worker_exited`，主服务继续运行。
+- 每个 isolated result 增加 `worker` 诊断：PID、exit code、elapsed、termination、signal、`oom_suspected`。
+- worker 内显式 `MemoryError` 映射为 `2002 worker_memory_error`；无返回的 `SIGKILL` 只标记“possible OOM or external kill”。
 - `keep_in_memory=true` 暂继续进程内执行并返回显式 warning，不伪装为已经具备 hard process timeout。
+

@@ -188,20 +188,29 @@ class RepeatedBenchmarkService:
                 }
                 try:
                     result = self.process_runner.run(run_isolated_repeated_model, task, timeout_sec=timeout)
-                except ProcessTimeoutError:
+                except ProcessTimeoutError as exc:
                     path.unlink(missing_ok=True)
-                    return self._error(case, model_id, warmup_runs, measured_runs, warnings,
-                                       {"code": 3001, "type": "inference_timeout", "message": f"suite case/model group exceeded {timeout:.3f}s hard timeout"})
+                    return self._error(
+                        case, model_id, warmup_runs, measured_runs, warnings,
+                        {"code": 3001, "type": "inference_timeout", "message": f"suite case/model group exceeded {timeout:.3f}s hard timeout"},
+                        worker=exc.diagnostics(),
+                    )
                 if result.status != "success":
                     path.unlink(missing_ok=True)
-                    return self._error(case, model_id, warmup_runs, measured_runs, warnings,
-                                       {"code": 3002, "type": "worker_exited", "message": result.error_message or "isolated suite worker exited unexpectedly", "exit_code": result.exit_code})
+                    return self._error(
+                        case, model_id, warmup_runs, measured_runs, warnings,
+                        {"code": 3002, "type": "worker_exited", "message": result.error_message or "isolated suite worker exited unexpectedly", "exit_code": result.exit_code},
+                        worker=result.diagnostics(),
+                    )
                 payload = dict(result.value or {})
                 if payload.get("status") != "success":
                     path.unlink(missing_ok=True)
-                    return self._error(case, model_id, warmup_runs, measured_runs, warnings,
-                                       payload.get("error") or {"code": 3002, "type": "worker_error", "message": "isolated suite worker failed"},
-                                       metadata=payload.get("metadata"))
+                    return self._error(
+                        case, model_id, warmup_runs, measured_runs, warnings,
+                        payload.get("error") or {"code": 3002, "type": "worker_error", "message": "isolated suite worker failed"},
+                        metadata=payload.get("metadata"),
+                        worker=result.diagnostics(),
+                    )
                 metadata = payload.get("metadata")
                 audio_url = f"/api/v1/audio/download/{run_id}/{filename}" if payload.get("audio_written") else None
                 for raw in payload.get("measurements") or []:
@@ -209,7 +218,7 @@ class RepeatedBenchmarkService:
                     wrote = bool(item.pop("wrote_representative_audio", False))
                     item["audio_url"] = audio_url if wrote else None
                     measurements.append(item)
-                return self._complete(case, model_id, warmup_runs, measured_runs, measurements, warnings, metadata, audio_url)
+                return self._complete(case, model_id, warmup_runs, measured_runs, measurements, warnings, metadata, audio_url, worker=result.diagnostics())
 
             if self.process_runner is not None and record.spec.keep_in_memory:
                 warnings.append(f"{model_id}: keep_in_memory suite execution remains in-process; hard process timeout is not enforced")
@@ -243,25 +252,25 @@ class RepeatedBenchmarkService:
                     self.registry.set_status(model_id, ModelStatus.ERROR, error="cleanup failed")
 
     @staticmethod
-    def _complete(case, model_id, warmups, repeats, measurements, warnings, metadata, audio_url) -> dict[str, Any]:
+    def _complete(case, model_id, warmups, repeats, measurements, warnings, metadata, audio_url, worker=None) -> dict[str, Any]:
         count = sum(m.get("status") == "success" for m in measurements)
         status = "success" if count == repeats else ("partial" if count else "error")
         return {
             "case_id": case.id, "model_id": model_id, "status": status, "audio_url": audio_url,
             "warmup_runs": warmups, "measured_runs": repeats, "successful_runs": count,
             "measurements": measurements, "aggregate": aggregate_measurements(measurements),
-            "warnings": warnings, "metadata": metadata,
+            "warnings": warnings, "metadata": metadata, "worker": worker,
             "error": RepeatedBenchmarkService._first_measurement_error(measurements) if status != "success" else None,
         }
 
     @staticmethod
-    def _error(case, model_id, warmups, repeats, warnings, error, measurements=None, metadata=None) -> dict[str, Any]:
+    def _error(case, model_id, warmups, repeats, warnings, error, measurements=None, metadata=None, worker=None) -> dict[str, Any]:
         measurements = measurements or []
         return {
             "case_id": case.id, "model_id": model_id, "status": "error", "audio_url": None,
             "warmup_runs": warmups, "measured_runs": repeats, "successful_runs": 0,
             "measurements": measurements, "aggregate": aggregate_measurements(measurements),
-            "warnings": warnings, "metadata": metadata, "error": error,
+            "warnings": warnings, "metadata": metadata, "worker": worker, "error": error,
         }
 
     @staticmethod

@@ -187,7 +187,7 @@ class BenchmarkService:
                     process_result = self.process_runner.run(
                         run_isolated_model, task, timeout_sec=self.inference_timeout_sec
                     )
-                except ProcessTimeoutError:
+                except ProcessTimeoutError as exc:
                     path.unlink(missing_ok=True)
                     return {
                         "model_id": model_id,
@@ -201,6 +201,7 @@ class BenchmarkService:
                             "message": f"model inference exceeded {self.inference_timeout_sec:.3f}s hard timeout",
                         },
                         "metadata": None,
+                        "worker": exc.diagnostics(),
                     }
                 if process_result.status != "success":
                     path.unlink(missing_ok=True)
@@ -217,6 +218,7 @@ class BenchmarkService:
                             "exit_code": process_result.exit_code,
                         },
                         "metadata": None,
+                        "worker": process_result.diagnostics(),
                     }
                 payload = dict(process_result.value or {})
                 if payload.get("status") != "success":
@@ -231,6 +233,7 @@ class BenchmarkService:
                             "code": 3002, "type": "worker_error", "message": "isolated worker failed"
                         },
                         "metadata": payload.get("metadata"),
+                        "worker": process_result.diagnostics(),
                     }
                 return {
                     "model_id": model_id,
@@ -240,6 +243,7 @@ class BenchmarkService:
                     "warnings": warnings,
                     "error": None,
                     "metadata": payload.get("metadata"),
+                    "worker": process_result.diagnostics(),
                 }
 
             if self.process_runner is not None and record.spec.keep_in_memory:
@@ -261,6 +265,7 @@ class BenchmarkService:
                 "warnings": warnings,
                 "error": None,
                 "metadata": output.metadata,
+                "worker": None,
             }
         except Exception as exc:
             error = self._normalize_error(exc)
@@ -272,6 +277,7 @@ class BenchmarkService:
                 "warnings": warnings,
                 "error": error,
                 "metadata": None,
+                "worker": None,
             }
         finally:
             if record is not None and isolated_run:
