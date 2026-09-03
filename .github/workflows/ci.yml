@@ -25,3 +25,26 @@ jobs:
         run: pytest
       - name: CLI smoke test
         run: python -m edgetts_arena dummy --text "CI smoke test" --output exports/ci-dummy.wav
+
+  piper-model-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Piper runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[piper]"
+      - name: Download low-quality Piper test voice
+        run: python -m piper.download_voices en_US-lessac-low --data-dir models/piper
+      - name: Real Piper CPU smoke test
+        run: |
+          python -m edgetts_arena piper \
+            --model models/piper/en_US-lessac-low.onnx \
+            --text "Edge TTS Arena real Piper smoke test." \
+            --threads 2 \
+            --output exports/ci-piper.wav
+          test -s exports/ci-piper.wav

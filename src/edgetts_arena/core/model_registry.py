@@ -47,8 +47,9 @@ def _default_adapter_factories() -> dict[str, AdapterFactory]:
     # Import adapters only when the registry is instantiated. Importing them at
     # module load time creates a cycle through edgetts_arena.core.__init__.
     from edgetts_arena.adapters.dummy_adapter import DummyTTSAdapter
+    from edgetts_arena.adapters.piper_adapter import PiperTTSAdapter
 
-    return {"dummy": DummyTTSAdapter}
+    return {"dummy": DummyTTSAdapter, "piper": PiperTTSAdapter}
 
 
 class ModelRegistry:

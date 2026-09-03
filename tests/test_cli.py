@@ -30,3 +30,14 @@ def test_module_cli_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert output.exists()
     assert output.stat().st_size > 44
+
+
+def test_piper_cli_parser_requires_model() -> None:
+    from edgetts_arena.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["piper", "--model", "voice.onnx", "--text", "hello", "--speed", "1.25"]
+    )
+    assert args.command == "piper"
+    assert args.model == Path("voice.onnx")
+    assert args.speed == 1.25
