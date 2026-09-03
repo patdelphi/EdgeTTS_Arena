@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import zipfile
 from pathlib import Path
 from typing import Callable
 
 try:
+    from scripts.acceptance_artifacts import prepare_output_dir, write_zip
     from scripts.real_model_smoke import run_gate
 except ModuleNotFoundError:  # direct: python scripts/target_device_acceptance.py
+    from acceptance_artifacts import prepare_output_dir, write_zip
     from real_model_smoke import run_gate
 
 from edgetts_arena.core.system_info import collect_system_environment
@@ -38,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rtf", type=float)
     parser.add_argument("--max-peak-rss-mb", type=float)
     parser.add_argument("--no-zip", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="delete an existing acceptance output directory/archive before running",
+    )
     return parser
 
 
@@ -63,17 +69,6 @@ def _accepted_arches(raw: str | None) -> set[str]:
     return {value.strip().lower() for value in raw.split(",") if value.strip()}
 
 
-def _archive_path(root: Path) -> Path:
-    return root.with_suffix(".zip")
-
-
-def _write_zip(root: Path, archive: Path) -> None:
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                bundle.write(path, path.relative_to(root))
-
-
 def run_acceptance(
     args: argparse.Namespace,
     *,
@@ -89,8 +84,9 @@ def run_acceptance(
     if args.max_peak_rss_mb is not None and args.max_peak_rss_mb <= 0:
         raise ValueError("max_peak_rss_mb must be positive")
 
-    root = args.output_dir.expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root, archive = prepare_output_dir(
+        Path(args.output_dir), overwrite=bool(getattr(args, "overwrite", False))
+    )
     environment = environment_collector(cpu_threads_per_model=args.threads)
     (root / "environment.json").write_text(
         json.dumps(environment, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -221,11 +217,11 @@ def run_acceptance(
         "errors": run_errors,
     }
     if not args.no_zip:
-        report["archive"] = str(_archive_path(root))
+        report["archive"] = str(archive)
     report_path = root / "acceptance_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if not args.no_zip:
-        _write_zip(root, _archive_path(root))
+        write_zip(root, archive)
     return report
 
 
