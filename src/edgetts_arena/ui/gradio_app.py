@@ -103,6 +103,10 @@ def build_arena_ui(
                         initial_caps["voices"], value=None, label="Voice",
                         interactive=initial_caps["voice_enabled"],
                     )
+                    language = gr.Dropdown(
+                        initial_caps["languages"], value=None, label="Language",
+                        interactive=initial_caps["language_enabled"],
+                    )
                     cap_summary = gr.Markdown(initial_caps["summary"])
                     run_btn = gr.Button("Run benchmark", variant="primary")
                 with gr.Column(scale=6):
@@ -180,6 +184,10 @@ def build_arena_ui(
                 gr.update(interactive=caps["speed_enabled"], value=1.0),
                 gr.update(interactive=caps["seed_enabled"], value=None),
                 gr.update(choices=caps["voices"], value=None, interactive=caps["voice_enabled"]),
+                gr.update(
+                    choices=caps["languages"], value=None,
+                    interactive=caps["language_enabled"],
+                ),
                 caps["summary"],
             )
 
@@ -189,6 +197,10 @@ def build_arena_ui(
                 gr.update(interactive=caps["speed_enabled"], value=1.0),
                 gr.update(interactive=caps["seed_enabled"], value=None),
                 gr.update(choices=caps["voices"], value=None, interactive=caps["voice_enabled"]),
+                gr.update(
+                    choices=caps["languages"], value=None,
+                    interactive=caps["language_enabled"],
+                ),
                 caps["summary"],
             )
 
@@ -200,7 +212,7 @@ def build_arena_ui(
         def run_arena(
             input_text: str, ids: list[str] | None, execution: str, thread_count: int | float,
             speed_value: float, seed_value: int | float | None, voice_value: str | None,
-            current: list[dict[str, Any]],
+            language_value: str | None, current: list[dict[str, Any]],
         ) -> tuple[Any, ...]:
             selected = list(ids or [])
             if not selected:
@@ -212,6 +224,7 @@ def build_arena_ui(
                     "speed": float(speed_value),
                     "seed": None if seed_value is None else int(seed_value),
                     "voice": voice_value or None,
+                    "language": language_value or None,
                     "sample_rate": None,
                 },
             )
@@ -243,7 +256,10 @@ def build_arena_ui(
             data = suite_service.run_suite(
                 model_ids=list(ids), case_ids=list(case_ids), warmup_runs=int(warm),
                 measured_runs=int(measured), cpu_threads_per_model=int(thread_count),
-                config={"speed": 1.0, "voice": None, "seed": None, "sample_rate": None},
+                config={
+                    "speed": 1.0, "voice": None, "language": None,
+                    "seed": None, "sample_rate": None,
+                },
             )
             names = {str(x["id"]): str(x.get("name") or x["id"]) for x in (current or registry.list_models())}
             success = sum(r.get("status") == "success" for r in data["results"])
@@ -292,14 +308,18 @@ def build_arena_ui(
             ]
             return revealed, "\n".join(lines), str(artifact_store.build_export(revealed["run_id"])), gr.update(interactive=False)
 
-        refresh_outputs = [model_state, models, suite_models, status, system, speed, seed, voice, cap_summary]
+        refresh_outputs = [
+            model_state, models, suite_models, status, system, speed, seed, voice, language, cap_summary,
+        ]
         refresh.click(refresh_runtime, outputs=refresh_outputs)
         demo.load(refresh_runtime, outputs=refresh_outputs)
-        models.change(selected_changed, [models, model_state], [speed, seed, voice, cap_summary])
+        models.change(
+            selected_changed, [models, model_state], [speed, seed, voice, language, cap_summary]
+        )
         preset.change(preset_changed, preset, text)
         run_btn.click(
             run_arena,
-            [text, models, mode, threads, speed, seed, voice, model_state],
+            [text, models, mode, threads, speed, seed, voice, language, model_state],
             [run_state, run_summary, export_file, *audios, *cards, comparison, start_blind,
              blind_state, blind_progress, reveal_output, reveal],
         )

@@ -21,6 +21,7 @@ def _models():
                 "speed": True,
                 "voices": True,
                 "voice_clone": False,
+                "language_control": True,
                 "languages": ["en"],
             },
         },
@@ -36,6 +37,7 @@ def _models():
                 "speed": True,
                 "voices": True,
                 "voice_clone": False,
+                "language_control": False,
                 "languages": ["en-gb"],
             },
         },
@@ -48,6 +50,8 @@ def test_capability_view_is_selection_driven() -> None:
     assert single["seed_enabled"] is True
     assert single["voice_enabled"] is True
     assert single["voices"] == ["default", "alt"]
+    assert single["language_enabled"] is True
+    assert single["languages"] == ["en"]
     assert single["streaming_enabled"] is True
 
     multi = capability_view(_models(), ["a", "b"])
@@ -55,6 +59,8 @@ def test_capability_view_is_selection_driven() -> None:
     assert multi["seed_enabled"] is True
     assert multi["seed_partial"] is True
     assert multi["voice_enabled"] is False
+    assert multi["language_enabled"] is False
+    assert multi["languages"] == []
     assert multi["streaming_enabled"] is False
 
 
@@ -65,6 +71,7 @@ def test_model_status_and_choices_include_runtime_state() -> None:
     rows = status_rows(_models())
     assert rows[0][0] == "Model A"
     assert "streaming" in rows[0][3]
+    assert "language_control" in rows[0][3]
 
 
 def test_result_presenter_shows_non_streaming_ttfb_as_na() -> None:

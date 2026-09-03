@@ -23,7 +23,7 @@ def status_rows(models: list[dict[str, Any]]) -> list[list[Any]]:
         capabilities = model.get("capabilities") or {}
         feature_names = [
             name
-            for name in ("streaming", "seed", "speed", "voices", "voice_clone")
+            for name in ("streaming", "seed", "speed", "voices", "voice_clone", "language_control")
             if capabilities.get(name)
         ]
         languages = ", ".join(capabilities.get("languages") or []) or "—"
@@ -52,6 +52,8 @@ def capability_view(
             "seed_partial": False,
             "voice_enabled": False,
             "voices": [],
+            "language_enabled": False,
+            "languages": [],
             "streaming_enabled": False,
             "summary": "Select at least one model.",
         }
@@ -69,15 +71,22 @@ def capability_view(
         voices = [str(value) for value in selected[0].get("voices") or []]
         voice_enabled = bool(voices)
 
+    languages: list[str] = []
+    language_enabled = False
+    if len(selected) == 1 and bool(caps[0].get("language_control")):
+        languages = [str(value) for value in caps[0].get("languages") or []]
+        language_enabled = bool(languages)
+
     unavailable = [str(item["id"]) for item in selected if item.get("status") == "unavailable"]
     lines = [
         f"Selected: **{len(selected)}** model(s)",
         f"Speed control: **{'enabled' if speed_enabled else 'disabled'}**",
         "Seed: **partial support**" if seed_partial else f"Seed: **{'enabled' if seed_enabled else 'disabled'}**",
+        f"Language control: **{'enabled' if language_enabled else 'disabled'}**",
         f"Streaming preview capable: **{'yes' if streaming_enabled else 'no'}**",
     ]
     if len(selected) > 1:
-        lines.append("Voice selection uses each model's default in multi-model Arena mode.")
+        lines.append("Voice/language controls use model defaults in multi-model Arena mode.")
     if unavailable:
         lines.append("Unavailable: " + ", ".join(unavailable))
     return {
@@ -86,6 +95,8 @@ def capability_view(
         "seed_partial": seed_partial,
         "voice_enabled": voice_enabled,
         "voices": voices,
+        "language_enabled": language_enabled,
+        "languages": languages,
         "streaming_enabled": streaming_enabled,
         "summary": "  \n".join(lines),
     }
