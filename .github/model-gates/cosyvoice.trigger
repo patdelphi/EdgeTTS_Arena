@@ -1,2 +1,2 @@
-gate=4
-reason=offline-wetext-assets
+gate=5
+reason=selective-wetext-assets

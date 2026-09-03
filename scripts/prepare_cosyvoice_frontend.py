@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import shutil
+import time
 from pathlib import Path
 
 from edgetts_arena.adapters.cosyvoice_adapter import WETEXT_REQUIRED_FILES, validate_wetext_assets
@@ -17,31 +17,53 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def prepare_wetext(output: Path) -> dict[str, object]:
+def _download_selected_wetext_assets(output: Path, *, attempts: int = 3) -> None:
     try:
         from modelscope import snapshot_download
     except ImportError as exc:
         raise SystemExit("modelscope is required; install the pinned CosyVoice runtime first") from exc
 
-    source = Path(snapshot_download("pengzhendong/wetext")).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    copied: dict[str, str] = {}
-    for relative in WETEXT_REQUIRED_FILES:
-        source_file = source / relative
-        if not source_file.is_file():
-            raise SystemExit(f"WeText source asset missing: {source_file}")
-        target = output / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_file, target)
-        copied[relative] = sha256_file(target)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            snapshot_download(
+                "pengzhendong/wetext",
+                revision="master",
+                allow_file_pattern=list(WETEXT_REQUIRED_FILES),
+                local_dir=str(output),
+            )
+            validate_wetext_assets(output)
+            return
+        except Exception as exc:  # network boundary: preserve exact final error below
+            last_error = exc
+            if attempt < attempts:
+                delay = attempt * 2
+                print(
+                    f"WeText selective download attempt {attempt}/{attempts} failed: "
+                    f"{type(exc).__name__}: {exc}; retrying in {delay}s",
+                    flush=True,
+                )
+                time.sleep(delay)
 
-    validate_wetext_assets(output)
+    assert last_error is not None
+    raise SystemExit(
+        "failed to download the required CosyVoice WeText assets after "
+        f"{attempts} attempts: {type(last_error).__name__}: {last_error}"
+    ) from last_error
+
+
+def prepare_wetext(output: Path) -> dict[str, object]:
+    _download_selected_wetext_assets(output)
+    root = validate_wetext_assets(output)
+    files = {relative: sha256_file(root / relative) for relative in WETEXT_REQUIRED_FILES}
     manifest = {
-        "source": "ModelScope:pengzhendong/wetext",
+        "source": "ModelScope:pengzhendong/wetext@master",
+        "download_mode": "selective allow_file_pattern",
         "purpose": "CosyVoice wetext==0.0.4 offline TN frontend",
-        "files": copied,
+        "files": files,
     }
-    (output / "asset_manifest.json").write_text(
+    (root / "asset_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
