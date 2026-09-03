@@ -55,12 +55,17 @@ class BenchmarkService:
         if execution_mode not in {"sequential", "concurrent"}:
             raise ArenaError(1001, "invalid execution_mode", error_type="validation_error")
 
-        self.resource_guard.assess(execution_mode=execution_mode)
-        threads = self.resource_guard.clamp_threads(cpu_threads_per_model)
+        plan = self.resource_guard.plan_execution(
+            execution_mode=execution_mode,
+            model_count=len(model_ids),
+            requested_threads_per_model=cpu_threads_per_model,
+        )
+        threads = plan.threads_per_model
         config = dict(config or {})
         run_id = new_run_id()
         started_at = utc_now()
         environment = collect_system_environment(cpu_threads_per_model=threads)
+        environment["execution_plan"] = plan.to_dict()
         self.artifact_store.create_run(run_id)
 
         if execution_mode == "sequential":
@@ -98,7 +103,11 @@ class BenchmarkService:
             "started_at": iso_utc(started_at),
             "completed_at": iso_utc(completed_at),
             "execution_mode": execution_mode,
+            "execution_profile": plan.profile,
+            "requested_cpu_threads_per_model": cpu_threads_per_model,
             "cpu_threads_per_model": threads,
+            "total_threads_budget": plan.total_threads_budget,
+            "resource_warnings": list(plan.warnings),
             "results": results,
         }
         self.artifact_store.write_json(run_id, "environment.json", environment)
@@ -110,7 +119,11 @@ class BenchmarkService:
                     "text": text,
                     "models": model_ids,
                     "execution_mode": execution_mode,
+                    "execution_profile": plan.profile,
+                    "requested_cpu_threads_per_model": cpu_threads_per_model,
                     "cpu_threads_per_model": threads,
+                    "total_threads_budget": plan.total_threads_budget,
+                    "resource_warnings": list(plan.warnings),
                     "config": config,
                 },
                 "data": data,

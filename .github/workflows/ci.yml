@@ -26,6 +26,28 @@ jobs:
       - name: CLI smoke test
         run: python -m edgetts_arena dummy --text "CI smoke test" --output exports/ci-dummy.wav
 
+  cross-platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install core runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Cross-platform Dummy smoke
+        run: python -m edgetts_arena dummy --text "cross platform smoke" --output exports/cross-platform.wav
+      - name: Verify WAV and API startup
+        run: >-
+          python -c "from pathlib import Path; from fastapi.testclient import TestClient; from edgetts_arena.api import create_app; p=Path('exports/cross-platform.wav'); assert p.is_file() and p.stat().st_size > 44; c=TestClient(create_app()); assert c.get('/healthz').status_code == 200; assert c.get('/api/v1/benchmark/presets').status_code == 200"
+
   ui-smoke:
     runs-on: ubuntu-latest
     steps:

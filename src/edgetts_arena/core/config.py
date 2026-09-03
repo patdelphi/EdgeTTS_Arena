@@ -12,6 +12,8 @@ import yaml
 class ResourceGuardSettings:
     min_available_memory_mb_soft: int = 1536
     min_available_memory_mb_hard: int = 768
+    min_available_memory_mb_per_concurrent_model: int = 512
+    max_concurrent_models: int = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,33 +40,28 @@ def load_settings(path: str | Path = "config/app_config.yaml") -> AppSettings:
     guard_raw = raw.get("resource_guard", {}) or {}
     guard = ResourceGuardSettings(
         min_available_memory_mb_soft=int(
-            os.getenv(
-                "EDGETTS_ARENA_MIN_MEMORY_SOFT_MB",
-                guard_raw.get("min_available_memory_mb_soft", 1536),
-            )
+            os.getenv("EDGETTS_ARENA_MIN_MEMORY_SOFT_MB", guard_raw.get("min_available_memory_mb_soft", 1536))
         ),
         min_available_memory_mb_hard=int(
+            os.getenv("EDGETTS_ARENA_MIN_MEMORY_HARD_MB", guard_raw.get("min_available_memory_mb_hard", 768))
+        ),
+        min_available_memory_mb_per_concurrent_model=int(
             os.getenv(
-                "EDGETTS_ARENA_MIN_MEMORY_HARD_MB",
-                guard_raw.get("min_available_memory_mb_hard", 768),
+                "EDGETTS_ARENA_MIN_MEMORY_PER_CONCURRENT_MODEL_MB",
+                guard_raw.get("min_available_memory_mb_per_concurrent_model", 512),
             )
+        ),
+        max_concurrent_models=int(
+            os.getenv("EDGETTS_ARENA_MAX_CONCURRENT_MODELS", guard_raw.get("max_concurrent_models", 4))
         ),
     )
     return AppSettings(
         host=os.getenv("EDGETTS_ARENA_HOST", raw.get("host", "127.0.0.1")),
         port=int(os.getenv("EDGETTS_ARENA_PORT", raw.get("port", 8000))),
         log_level=os.getenv("EDGETTS_ARENA_LOG_LEVEL", raw.get("log_level", "INFO")),
-        default_num_threads=int(
-            os.getenv(
-                "EDGETTS_ARENA_DEFAULT_THREADS",
-                raw.get("default_num_threads", 4),
-            )
-        ),
+        default_num_threads=int(os.getenv("EDGETTS_ARENA_DEFAULT_THREADS", raw.get("default_num_threads", 4))),
         inference_timeout_sec=int(
-            os.getenv(
-                "EDGETTS_ARENA_INFERENCE_TIMEOUT_SEC",
-                raw.get("inference_timeout_sec", 60),
-            )
+            os.getenv("EDGETTS_ARENA_INFERENCE_TIMEOUT_SEC", raw.get("inference_timeout_sec", 60))
         ),
         resource_guard=guard,
     )

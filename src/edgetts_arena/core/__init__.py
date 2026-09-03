@@ -3,7 +3,7 @@ from .capabilities import TTSCapabilities
 from .metrics_collector import InferenceMetrics, MetricsCollector
 from .model_registry import ModelRegistry, ModelStatus
 from .process_runner import ProcessResult, ProcessRunner, ProcessTimeoutError
-from .resource_guard import ResourceAssessment, ResourceGuard
+from .resource_guard import ExecutionPlan, ResourceAssessment, ResourceGuard
 
 __all__ = [
     "BaseTTSAdapter",
@@ -16,6 +16,7 @@ __all__ = [
     "ProcessResult",
     "ProcessRunner",
     "ProcessTimeoutError",
+    "ExecutionPlan",
     "ResourceAssessment",
     "ResourceGuard",
 ]

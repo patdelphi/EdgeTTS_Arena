@@ -159,3 +159,37 @@ def test_dummy_streaming_emits_first_chunk_and_complete(tmp_path) -> None:
                     break
         assert complete is not None
         assert complete["chunks"] >= 1
+
+
+def test_concurrent_benchmark_reports_pressure_execution_plan(tmp_path) -> None:
+    registry = ModelRegistry(
+        [
+            ModelSpec(id="dummy-a", name="Dummy A", adapter="dummy", enabled=True, keep_in_memory=False),
+            ModelSpec(id="dummy-b", name="Dummy B", adapter="dummy", enabled=True, keep_in_memory=False),
+        ],
+        adapter_factories={"dummy": DummyTTSAdapter},
+    )
+    settings = AppSettings(
+        resource_guard=ResourceGuardSettings(
+            min_available_memory_mb_soft=1,
+            min_available_memory_mb_hard=1,
+            min_available_memory_mb_per_concurrent_model=1,
+            max_concurrent_models=4,
+        )
+    )
+    client = TestClient(create_app(settings=settings, registry=registry, exports_root=tmp_path / "exports"))
+    response = client.post(
+        "/api/v1/benchmark/run",
+        json={
+            "text": "pressure profile",
+            "models": ["dummy-a", "dummy-b"],
+            "execution_mode": "concurrent",
+            "cpu_threads_per_model": 64,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["execution_profile"] == "pressure"
+    assert data["requested_cpu_threads_per_model"] == 64
+    assert data["total_threads_budget"] <= data["cpu_threads_per_model"] * 2
+    assert data["resource_warnings"]
