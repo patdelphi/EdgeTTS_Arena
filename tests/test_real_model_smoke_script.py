@@ -36,7 +36,7 @@ class FakeAdapter:
         assert text == "smoke text"
         assert kwargs["voice"] == "demo"
         return TTSOutput(
-            audio=np.linspace(-0.1, 0.1, 240, dtype=np.float32),
+            audio=np.linspace(-0.1, 0.1, 12000, dtype=np.float32),
             sample_rate=24000,
             metadata={"runtime": "fake"},
         )
@@ -65,4 +65,38 @@ def test_real_model_smoke_writes_audio_and_report(tmp_path: Path, monkeypatch) -
     assert report["voice"] == "demo"
     assert report["metadata"]["runtime"] == "fake"
     assert report["metrics"]["ttfb_ms"] is None
+    assert report["audio_sanity"]["duration_sec"] == 0.5
+    assert report["audio_sanity"]["peak_abs"] >= 0.09
+    assert report["audio_sanity"]["rms"] > 0.01
+    assert adapter.unloaded is True
+
+
+def test_real_model_smoke_rejects_silent_audio(tmp_path: Path, monkeypatch) -> None:
+    module = _load_script_module()
+
+    class SilentAdapter(FakeAdapter):
+        def infer(self, text: str, **kwargs):
+            assert self.loaded is True
+            return TTSOutput(
+                audio=np.zeros(12000, dtype=np.float32),
+                sample_rate=24000,
+                metadata={"runtime": "fake"},
+            )
+
+    adapter = SilentAdapter()
+    monkeypatch.setattr(module, "MeloTTSAdapter", lambda: adapter)
+    args = argparse.Namespace(
+        model="melotts",
+        model_path="fake-model",
+        text="smoke text",
+        voice=None,
+        threads=2,
+        speed=1.0,
+        output=str(tmp_path / "silent.wav"),
+        report=str(tmp_path / "silent.json"),
+    )
+    import pytest
+    with pytest.raises(RuntimeError, match="silent/near-silent"):
+        module.run_gate(args)
+    assert not (tmp_path / "silent.wav").exists()
     assert adapter.unloaded is True

@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
 from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
 from edgetts_arena.adapters.melotts_adapter import MeloTTSAdapter
 from edgetts_arena.core.metrics_collector import MetricsCollector
@@ -38,8 +40,21 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
         if voice is not None:
             kwargs["voice"] = voice
         output, metrics = MetricsCollector().measure_inference(adapter, args.text, **kwargs)
+        audio = np.asarray(output.audio, dtype=np.float32).reshape(-1)
+        duration_sec = float(audio.size / output.sample_rate)
+        peak_abs = float(np.max(np.abs(audio)))
+        rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+        if not np.isfinite(audio).all():
+            raise RuntimeError("real-model gate produced non-finite audio")
+        if duration_sec < 0.1:
+            raise RuntimeError(f"real-model gate produced implausibly short audio: {duration_sec:.4f}s")
+        if peak_abs < 1e-4 or rms < 1e-5:
+            raise RuntimeError(
+                f"real-model gate produced silent/near-silent audio: peak={peak_abs:.6g}, rms={rms:.6g}"
+            )
+
         output_path = Path(args.output)
-        write_wav(output_path, output.audio, output.sample_rate)
+        write_wav(output_path, audio, output.sample_rate)
         report: dict[str, object] = {
             "model": args.model,
             "model_path": str(Path(args.model_path).resolve()),
@@ -47,7 +62,12 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
             "threads": args.threads,
             "speed": args.speed,
             "sample_rate": output.sample_rate,
-            "samples": int(output.audio.size),
+            "samples": int(audio.size),
+            "audio_sanity": {
+                "duration_sec": duration_sec,
+                "peak_abs": peak_abs,
+                "rms": rms,
+            },
             "metrics": metrics.to_dict(),
             "metadata": output.metadata,
             "output": str(output_path.resolve()),
