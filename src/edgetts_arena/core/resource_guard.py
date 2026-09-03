@@ -86,9 +86,15 @@ def _cgroup_memory_available_bytes() -> int | None:
     return None
 
 
-def effective_available_memory_bytes() -> int:
-    """Return memory available to this process, respecting a cgroup limit when present."""
-    host_available = max(0, int(psutil.virtual_memory().available))
+def effective_available_memory_bytes(*, host_available_bytes: int | None = None) -> int:
+    """Return memory available to this process, respecting a cgroup limit when present.
+
+    A caller that already captured ``psutil.virtual_memory()`` may pass its
+    ``available`` value so host and effective fields come from the same snapshot.
+    """
+    if host_available_bytes is None:
+        host_available_bytes = int(psutil.virtual_memory().available)
+    host_available = max(0, int(host_available_bytes))
     cgroup_available = _cgroup_memory_available_bytes()
     if cgroup_available is None:
         return host_available

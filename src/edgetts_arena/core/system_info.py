@@ -34,6 +34,10 @@ def _package_versions() -> dict[str, str]:
 
 def collect_system_environment(*, cpu_threads_per_model: int | None = None) -> dict[str, object]:
     memory = psutil.virtual_memory()
+    host_available_bytes = int(memory.available)
+    effective_available_bytes = effective_available_memory_bytes(
+        host_available_bytes=host_available_bytes
+    )
     cpu_brand = platform.processor().strip() or platform.uname().processor.strip() or "unknown"
     thread_settings = {
         "cpu_threads_per_model": cpu_threads_per_model,
@@ -51,8 +55,8 @@ def collect_system_environment(*, cpu_threads_per_model: int | None = None) -> d
         "cpu_physical_cores": int(psutil.cpu_count(logical=False) or 1),
         "cpu_effective_cores": effective_cpu_count(),
         "total_ram_gb": round(memory.total / (1024**3), 3),
-        "available_ram_gb": round(memory.available / (1024**3), 3),
-        "available_ram_effective_gb": round(effective_available_memory_bytes() / (1024**3), 3),
+        "available_ram_gb": round(host_available_bytes / (1024**3), 3),
+        "available_ram_effective_gb": round(effective_available_bytes / (1024**3), 3),
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_executable": sys.executable,
