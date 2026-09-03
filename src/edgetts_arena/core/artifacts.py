@@ -47,7 +47,7 @@ class RunArtifactStore:
         return path
 
     def write_json(self, run_id: str, filename: str, payload: Any) -> Path:
-        if filename not in {"benchmark_report.json", "environment.json"}:
+        if filename not in {"benchmark_report.json", "environment.json", "blind_scores.json"}:
             raise ArenaError(1001, "unsupported artifact filename", error_type="invalid_path")
         path = self.run_dir(run_id) / filename
         path.write_text(
@@ -70,6 +70,9 @@ class RunArtifactStore:
                 archive.write(audio_file, arcname=f"audio/{audio_file.name}")
             archive.write(report, arcname="benchmark_report.json")
             archive.write(environment, arcname="environment.json")
+            blind_scores = run_dir / "blind_scores.json"
+            if blind_scores.is_file():
+                archive.write(blind_scores, arcname="blind_scores.json")
         return zip_path
 
     @staticmethod

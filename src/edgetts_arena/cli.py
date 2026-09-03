@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default=None, help="bind host; defaults to app config")
     serve.add_argument("--port", type=int, default=None, help="bind port; defaults to app config")
     serve.add_argument("--reload", action="store_true", help="enable uvicorn auto-reload for development")
+    serve.add_argument("--ui", action="store_true", help="mount the optional Gradio Arena UI at /arena")
     return parser
 
 
@@ -99,8 +100,13 @@ def main() -> int:
             logging.getLogger(__name__).warning(
                 "API is binding to %s and may be reachable from other devices", host
             )
+        app_factory = (
+            "edgetts_arena.ui.gradio_app:create_full_app"
+            if args.ui
+            else "edgetts_arena.api.app:create_app"
+        )
         uvicorn.run(
-            "edgetts_arena.api.app:create_app",
+            app_factory,
             factory=True,
             host=host,
             port=port,

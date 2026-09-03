@@ -26,6 +26,21 @@ jobs:
       - name: CLI smoke test
         run: python -m edgetts_arena dummy --text "CI smoke test" --output exports/ci-dummy.wav
 
+  ui-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install UI runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+      - name: UI smoke tests
+        run: pytest tests/test_ui_presenter.py tests/test_blind_ab.py tests/test_ui_gradio_smoke.py
+
   piper-model-smoke:
     runs-on: ubuntu-latest
     steps:
