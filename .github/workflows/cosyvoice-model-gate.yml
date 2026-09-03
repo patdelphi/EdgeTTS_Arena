@@ -37,6 +37,7 @@ jobs:
               'tensorrt-cu12',
               'torch==',
               'torchaudio==',
+              'openai-whisper==',
           )
           kept, removed = [], []
           for raw in source.read_text(encoding='utf-8').splitlines():
@@ -51,12 +52,15 @@ jobs:
           assert any(line.startswith('onnxruntime-gpu==') for line in removed)
           assert any(line.startswith('torch==') for line in removed)
           assert any(line.startswith('tensorrt-cu12') for line in removed)
+          assert any(line.startswith('openai-whisper==') for line in removed)
           PY
       - name: Install project and CPU-only CosyVoice runtime
         run: |
           python -m pip install --upgrade pip
+          python -m pip install "setuptools==80.9.0" wheel
           python -m pip install -e .
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.3.1" "torchaudio==2.3.1"
+          python -m pip install --no-build-isolation "openai-whisper==20231117"
           python -m pip install -r vendor/CosyVoice/requirements.cpu.txt
           python -m pip install "onnxruntime==1.18.0" huggingface_hub
       - name: CPU runtime preflight
@@ -66,6 +70,7 @@ jobs:
           python - <<'PY'
           import torch
           import onnxruntime as ort
+          import whisper
           from cosyvoice.cli.cosyvoice import AutoModel
           assert torch.cuda.is_available() is False
           providers = ort.get_available_providers()
@@ -74,6 +79,7 @@ jobs:
           assert callable(AutoModel)
           print('torch:', torch.__version__)
           print('onnxruntime:', ort.__version__, providers)
+          print('whisper:', whisper.__file__)
           PY
       - name: Download pinned CosyVoice 300M SFT model
         env:

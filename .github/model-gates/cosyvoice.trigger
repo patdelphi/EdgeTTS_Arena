@@ -1,2 +1,2 @@
-gate=2
-reason=dedicated-cpu-workflow-trigger
+gate=3
+reason=whisper-no-build-isolation
