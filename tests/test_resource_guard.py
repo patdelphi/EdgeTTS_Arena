@@ -115,3 +115,25 @@ def test_single_core_rejects_multi_model_concurrent_budget() -> None:
             execution_mode="concurrent", model_count=2, requested_threads_per_model=1
         )
     assert exc_info.value.error_type == "concurrent_cpu_budget"
+
+
+def test_effective_available_memory_uses_cgroup_remaining_when_lower(monkeypatch) -> None:
+    import edgetts_arena.core.resource_guard as module
+
+    class Memory:
+        available = 8 * 1024 * 1024 * 1024
+
+    monkeypatch.setattr(module.psutil, "virtual_memory", lambda: Memory())
+    monkeypatch.setattr(module, "_cgroup_memory_available_bytes", lambda: 1536 * MB)
+    assert module.effective_available_memory_bytes() == 1536 * MB
+
+
+def test_effective_available_memory_falls_back_to_host(monkeypatch) -> None:
+    import edgetts_arena.core.resource_guard as module
+
+    class Memory:
+        available = 2048 * MB
+
+    monkeypatch.setattr(module.psutil, "virtual_memory", lambda: Memory())
+    monkeypatch.setattr(module, "_cgroup_memory_available_bytes", lambda: None)
+    assert module.effective_available_memory_bytes() == 2048 * MB

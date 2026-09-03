@@ -50,6 +50,51 @@ def _cgroup_cpu_quota_count() -> int | None:
     return None
 
 
+def _cgroup_memory_available_bytes() -> int | None:
+    """Best-effort Linux cgroup v2/v1 remaining-memory detection."""
+    try:
+        limit_path = Path("/sys/fs/cgroup/memory.max")
+        current_path = Path("/sys/fs/cgroup/memory.current")
+        if limit_path.is_file() and current_path.is_file():
+            limit_raw = limit_path.read_text(encoding="utf-8").strip()
+            if limit_raw != "max":
+                limit = int(limit_raw)
+                current = int(current_path.read_text(encoding="utf-8").strip())
+                if limit > 0 and current >= 0:
+                    return max(0, limit - current)
+    except (OSError, ValueError):
+        pass
+
+    v1_candidates = (
+        (
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+        ),
+        (Path("/sys/fs/cgroup/memory.limit_in_bytes"), Path("/sys/fs/cgroup/memory.usage_in_bytes")),
+    )
+    for limit_path, usage_path in v1_candidates:
+        try:
+            if not limit_path.is_file() or not usage_path.is_file():
+                continue
+            limit = int(limit_path.read_text(encoding="utf-8").strip())
+            usage = int(usage_path.read_text(encoding="utf-8").strip())
+            # cgroup v1 commonly uses a near-int64-max sentinel for unlimited.
+            if 0 < limit < (1 << 60) and usage >= 0:
+                return max(0, limit - usage)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def effective_available_memory_bytes() -> int:
+    """Return memory available to this process, respecting a cgroup limit when present."""
+    host_available = max(0, int(psutil.virtual_memory().available))
+    cgroup_available = _cgroup_memory_available_bytes()
+    if cgroup_available is None:
+        return host_available
+    return max(0, min(host_available, int(cgroup_available)))
+
+
 def effective_cpu_count() -> int:
     """Return the conservative CPU budget effectively available to this process."""
     candidates: list[int] = []
@@ -127,7 +172,7 @@ class ResourceGuard:
         cpu_count_provider: Callable[[], int | None] | None = None,
     ) -> None:
         self.settings = settings
-        self._available_memory_provider = available_memory_provider or (lambda: psutil.virtual_memory().available)
+        self._available_memory_provider = available_memory_provider or effective_available_memory_bytes
         self._cpu_count_provider = cpu_count_provider or effective_cpu_count
 
     def assess(self, *, execution_mode: str = "sequential") -> ResourceAssessment:

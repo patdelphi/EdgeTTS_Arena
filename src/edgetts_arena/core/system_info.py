@@ -7,7 +7,7 @@ from importlib import metadata as importlib_metadata
 
 import psutil
 
-from edgetts_arena.core.resource_guard import effective_cpu_count
+from edgetts_arena.core.resource_guard import effective_available_memory_bytes, effective_cpu_count
 
 
 _PACKAGE_NAMES = (
@@ -52,6 +52,7 @@ def collect_system_environment(*, cpu_threads_per_model: int | None = None) -> d
         "cpu_effective_cores": effective_cpu_count(),
         "total_ram_gb": round(memory.total / (1024**3), 3),
         "available_ram_gb": round(memory.available / (1024**3), 3),
+        "available_ram_effective_gb": round(effective_available_memory_bytes() / (1024**3), 3),
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_executable": sys.executable,
