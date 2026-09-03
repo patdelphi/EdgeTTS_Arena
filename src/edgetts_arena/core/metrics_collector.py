@@ -26,7 +26,7 @@ class InferenceMetrics:
 
 
 class MetricsCollector:
-    """Collects adapter-independent wall, RSS and process CPU metrics."""
+    """Collect wall, RSS and CPU metrics, including declared native child work."""
 
     def __init__(self, *, sample_interval_sec: float = 0.01) -> None:
         self.sample_interval_sec = max(0.001, sample_interval_sec)
@@ -69,13 +69,33 @@ class MetricsCollector:
             (cpu_after.user + cpu_after.system) - (cpu_before.user + cpu_before.system),
         )
         audio_duration_sec = output.audio.size / output.sample_rate
+
+        parent_peak_mb = peak_rss / (1024 * 1024)
+        parent_delta_mb = max(0, peak_rss - baseline_rss) / (1024 * 1024)
+        parent_cpu_pct = (cpu_seconds / elapsed) * 100.0
+        child_peak_mb = self._metadata_metric(output, "subprocess_peak_rss_mb") or 0.0
+        child_cpu_pct = self._metadata_metric(output, "subprocess_avg_cpu_usage_pct") or 0.0
+
         metrics = InferenceMetrics(
             inference_time_ms=elapsed * 1000.0,
             audio_duration_ms=audio_duration_sec * 1000.0,
             rtf=elapsed / max(audio_duration_sec, 1e-9),
-            peak_rss_mb=peak_rss / (1024 * 1024),
-            rss_delta_mb=max(0, peak_rss - baseline_rss) / (1024 * 1024),
-            avg_cpu_usage_pct=(cpu_seconds / elapsed) * 100.0,
+            # A subprocess-backed adapter keeps the Python worker alive while
+            # the native child runs, so their resident sets are additive.
+            peak_rss_mb=parent_peak_mb + child_peak_mb,
+            rss_delta_mb=parent_delta_mb + child_peak_mb,
+            avg_cpu_usage_pct=parent_cpu_pct + child_cpu_pct,
             ttfb_ms=None,
         )
         return output, metrics
+
+    @staticmethod
+    def _metadata_metric(output: TTSOutput, key: str) -> float | None:
+        value = output.metadata.get(key)
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None

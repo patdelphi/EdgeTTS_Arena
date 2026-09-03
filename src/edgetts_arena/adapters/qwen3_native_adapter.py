@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from typing import Any, Callable
 
 import numpy as np
+import psutil
 import soundfile as sf
 
 from edgetts_arena.core.base_adapter import BaseTTSAdapter, TTSOutput
@@ -17,51 +19,25 @@ from edgetts_arena.core.errors import ArenaError, ModelNotLoadedError
 CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 _OFFICIAL_SPEAKERS = (
-    "Vivian",
-    "Serena",
-    "Uncle_Fu",
-    "Dylan",
-    "Eric",
-    "Ryan",
-    "Aiden",
-    "Ono_Anna",
-    "Sohee",
+    "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee",
 )
 _LANGUAGE_ALIASES = {
-    "zh": "Chinese",
-    "chinese": "Chinese",
-    "en": "English",
-    "english": "English",
-    "ja": "Japanese",
-    "jp": "Japanese",
-    "japanese": "Japanese",
-    "ko": "Korean",
-    "kr": "Korean",
-    "korean": "Korean",
-    "de": "German",
-    "german": "German",
-    "fr": "French",
-    "french": "French",
-    "ru": "Russian",
-    "russian": "Russian",
-    "pt": "Portuguese",
-    "portuguese": "Portuguese",
-    "es": "Spanish",
-    "spanish": "Spanish",
-    "it": "Italian",
-    "italian": "Italian",
+    "zh": "Chinese", "chinese": "Chinese",
+    "en": "English", "english": "English",
+    "ja": "Japanese", "jp": "Japanese", "japanese": "Japanese",
+    "ko": "Korean", "kr": "Korean", "korean": "Korean",
+    "de": "German", "german": "German",
+    "fr": "French", "french": "French",
+    "ru": "Russian", "russian": "Russian",
+    "pt": "Portuguese", "portuguese": "Portuguese",
+    "es": "Spanish", "spanish": "Spanish",
+    "it": "Italian", "italian": "Italian",
 }
 _QUANT_FLAGS = {"bf16": None, "int8": "--int8", "int4": "--int4"}
 
 
 class Qwen3NativeTTSAdapter(BaseTTSAdapter):
-    """Subprocess adapter for the pinned community pure-C Qwen3-TTS runtime.
-
-    This adapter is deliberately separate from :class:`Qwen3TTSAdapter`, which
-    remains the official ``qwen-tts`` FP32 compatibility baseline. The native
-    runtime is optional and experimental; a local manifest pins the executable,
-    model directory, runtime revision and quantization mode.
-    """
+    """Subprocess adapter for the pinned community pure-C Qwen3-TTS runtime."""
 
     id = "qwen3-tts-0.6b-native"
     capabilities = TTSCapabilities(
@@ -87,25 +63,17 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
         self._num_threads = 1
         self.is_loaded = False
 
-    def load_model(
-        self,
-        model_path: str,
-        *,
-        device: str = "cpu",
-        num_threads: int = 4,
-    ) -> None:
+    def load_model(self, model_path: str, *, device: str = "cpu", num_threads: int = 4) -> None:
         if device != "cpu":
             raise ValueError("Qwen3 native adapter currently supports CPU only")
         if num_threads < 1:
             raise ValueError("num_threads must be >= 1")
-
         manifest_path = Path(model_path).expanduser()
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Qwen3 native manifest not found: {manifest_path}")
         manifest = self._read_json(manifest_path, "Qwen3 native manifest")
         if str(manifest.get("runtime") or "") != "qwen3-tts-c":
             raise ValueError("Qwen3 native manifest runtime must be 'qwen3-tts-c'")
-
         base = manifest_path.resolve().parent
         binary = self._resolve_manifest_path(base, manifest.get("binary"), "binary")
         model_dir = self._resolve_manifest_path(base, manifest.get("model_dir"), "model_dir")
@@ -114,21 +82,14 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
         if not model_dir.is_dir():
             raise FileNotFoundError(f"Qwen3 native model directory not found: {model_dir}")
         self._validate_checkpoint(model_dir)
-
         quantization = str(manifest.get("quantization") or "int8").strip().lower()
         if quantization not in _QUANT_FLAGS:
             raise ValueError("Qwen3 native quantization must be one of: bf16, int8, int4")
         default_language = self._normalize_language(manifest.get("default_language") or "English")
         default_voice = self._select_voice(str(manifest.get("default_voice") or "Vivian"))
-
         preflight = self._run_command([str(binary), "--caps"])
         if preflight.returncode != 0:
-            raise ArenaError(
-                1002,
-                "Qwen3 native runtime preflight failed: " + self._diagnostic(preflight),
-                error_type="model_unavailable",
-            )
-
+            raise ArenaError(1002, "Qwen3 native runtime preflight failed: " + self._diagnostic(preflight), error_type="model_unavailable")
         self._manifest_path = manifest_path.resolve()
         self._binary = binary
         self._model_dir = model_dir
@@ -140,25 +101,13 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
         self._num_threads = num_threads
         self.is_loaded = True
 
-    def infer(
-        self,
-        text: str,
-        *,
-        voice: str | None = None,
-        speed: float = 1.0,
-        **kwargs: Any,
-    ) -> TTSOutput:
+    def infer(self, text: str, *, voice: str | None = None, speed: float = 1.0, **kwargs: Any) -> TTSOutput:
         binary, model_dir = self._require_loaded()
         normalized = text.strip()
         if not normalized:
             raise ValueError("text must not be empty")
         if speed != 1.0:
-            raise ArenaError(
-                1003,
-                "Qwen3 native adapter does not expose semantic speed control",
-                error_type="capability_conflict",
-            )
-
+            raise ArenaError(1003, "Qwen3 native adapter does not expose semantic speed control", error_type="capability_conflict")
         selected_voice = self._select_voice(voice or self._default_voice)
         language = self._normalize_language(kwargs.pop("language", self._default_language))
         seed = kwargs.pop("seed", None)
@@ -169,22 +118,15 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
         with tempfile.TemporaryDirectory(prefix="edgetts-arena-qwen3-native-") as temp_dir:
             output_path = Path(temp_dir) / "output.wav"
             command = [
-                str(binary),
-                "-d", str(model_dir),
-                "--text", normalized,
-                "-o", str(output_path),
-                "-s", selected_voice,
-                "-l", language,
-                "-j", str(self._num_threads),
-                "--silent",
+                str(binary), "-d", str(model_dir), "--text", normalized, "-o", str(output_path),
+                "-s", selected_voice, "-l", language, "-j", str(self._num_threads), "--silent",
             ]
             quant_flag = _QUANT_FLAGS[self._quantization]
             if quant_flag is not None:
                 command.append(quant_flag)
             if seed is not None:
                 command.extend(["--seed", str(int(seed))])
-
-            result = self._run_command(command)
+            result, child_metrics = self._run_synthesis_command(command)
             if result.returncode != 0:
                 raise RuntimeError("Qwen3 native synthesis failed: " + self._diagnostic(result))
             if not output_path.is_file() or output_path.stat().st_size <= 44:
@@ -199,7 +141,6 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
             raise RuntimeError("Qwen3 native runtime returned empty/invalid audio")
         if not np.isfinite(audio).all():
             raise RuntimeError("Qwen3 native runtime returned non-finite audio")
-
         return TTSOutput(
             audio=audio,
             sample_rate=int(sample_rate),
@@ -215,6 +156,7 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
                 "threads": self._num_threads,
                 "streaming": False,
                 "mode": "native_cli",
+                **child_metrics,
             },
         )
 
@@ -229,14 +171,52 @@ class Qwen3NativeTTSAdapter(BaseTTSAdapter):
         if self._command_runner is not None:
             return self._command_runner(command)
         try:
-            return subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            return subprocess.run(command, check=False, capture_output=True, text=True)
         except OSError as exc:
             return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
+
+    def _run_synthesis_command(self, command: list[str]) -> tuple[subprocess.CompletedProcess[str], dict[str, float]]:
+        if self._command_runner is not None:
+            return self._command_runner(command), {}
+        started = time.perf_counter()
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except OSError as exc:
+            return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc)), {}
+
+        peak_rss = 0
+        last_cpu_seconds = 0.0
+        try:
+            monitored = psutil.Process(process.pid)
+            while process.poll() is None:
+                try:
+                    peak_rss = max(peak_rss, monitored.memory_info().rss)
+                    cpu = monitored.cpu_times()
+                    last_cpu_seconds = max(last_cpu_seconds, cpu.user + cpu.system)
+                except psutil.Error:
+                    pass
+                time.sleep(0.01)
+            try:
+                peak_rss = max(peak_rss, monitored.memory_info().rss)
+                cpu = monitored.cpu_times()
+                last_cpu_seconds = max(last_cpu_seconds, cpu.user + cpu.system)
+            except psutil.Error:
+                pass
+            stdout, stderr = process.communicate()
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+
+        elapsed = max(time.perf_counter() - started, 1e-9)
+        return (
+            subprocess.CompletedProcess(command, int(process.returncode or 0), stdout=stdout, stderr=stderr),
+            {
+                "subprocess_peak_rss_mb": peak_rss / (1024 * 1024),
+                "subprocess_avg_cpu_usage_pct": (last_cpu_seconds / elapsed) * 100.0,
+                "subprocess_elapsed_ms": elapsed * 1000.0,
+            },
+        )
 
     @staticmethod
     def _read_json(path: Path, label: str) -> dict[str, Any]:
