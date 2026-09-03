@@ -49,8 +49,14 @@ def _default_adapter_factories() -> dict[str, AdapterFactory]:
     from edgetts_arena.adapters.dummy_adapter import DummyTTSAdapter
     from edgetts_arena.adapters.kokoro_adapter import KokoroTTSAdapter
     from edgetts_arena.adapters.piper_adapter import PiperTTSAdapter
+    from edgetts_arena.adapters.qwen3_adapter import Qwen3TTSAdapter
 
-    return {"dummy": DummyTTSAdapter, "piper": PiperTTSAdapter, "kokoro": KokoroTTSAdapter}
+    return {
+        "dummy": DummyTTSAdapter,
+        "piper": PiperTTSAdapter,
+        "kokoro": KokoroTTSAdapter,
+        "qwen3": Qwen3TTSAdapter,
+    }
 
 
 class ModelRegistry:

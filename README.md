@@ -2,7 +2,7 @@
 
 EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性能评测与试听工作台。
 
-当前实现状态：**Stage 0 + Stage 1 已完成；Stage 2 已完成 Piper Adapter 实现，真实 Piper CPU CI smoke 正在作为阶段门槛。**
+当前实现状态：**Stage 0~2 已完成：Piper 与 Kokoro 已通过真实 CPU CI；Qwen3-TTS 0.6B 以 experimental/unavailable placeholder 接入，不伪造未验证的 CPU runtime。**
 
 - 开发规格：[`docs/README.md`](./docs/README.md)
 - 开发基线与冻结决策：[`docs/00_开发准备与文档审阅.md`](./docs/00_开发准备与文档审阅.md)
@@ -107,6 +107,35 @@ CI 中另有真实 Piper CPU smoke job：安装 `piper-tts`、下载 `en_US-less
 
 > 第三方许可：当前维护的 Piper runtime（OHF-Voice/piper1-gpl）为 GPL-3.0；官方 `rhasspy/piper-voices` 中 `en_US-lessac-low` voice 标注为 MIT。若发行包内捆绑 Piper runtime，需要单独检查并遵守其许可证要求。
 
+## Stage 2 — Kokoro
+
+安装 Kokoro 可选依赖：
+
+```bash
+python -m pip install -e ".[kokoro]"
+```
+
+Adapter 使用 `kokoro-onnx>=0.6.1` + ONNX Runtime，并通过自建 `InferenceSession` 控制 CPU 线程。当前直接文本能力先冻结为 `en-us` / `en-gb`；其他语言在独立 G2P 路线验证前不宣称支持。CI 已使用官方 v1.0 int8 ONNX（约 88 MB）完成真实 CPU 合成验证。
+
+```bash
+python -m edgetts_arena kokoro \
+  --model models/kokoro/kokoro-v1.0.int8.onnx \
+  --voice af_heart \
+  --text "Edge TTS Arena Kokoro test." \
+  --threads 2 \
+  --output exports/kokoro.wav
+```
+
+## Stage 2 — Qwen3-TTS experimental
+
+`Qwen3TTSAdapter` 目前是有意保持不可用的占位实现：
+
+- `config/models_config.yaml` 默认 `enabled: false`、`experimental: true`。
+- 不绑定尚未冻结的社区 CPU conversion/runtime。
+- capability 只反映“当前 Adapter 真正实现的能力”，因此全部保持 false/empty。
+- `load_model()` 明确返回 `experimental_runtime_unavailable`，`infer()` 不生成伪音频。
+- 社区 ncnn/C++ CPU 路线只作为后续 POC 候选，必须通过可复现模型包、许可证、内存和 benchmark gate 后才能转为正式 runtime。
+
 ## 下一阶段
 
-**Stage 2 后续**：完成 Kokoro Adapter；Qwen3-TTS 继续保持 experimental/feature flag。Piper real-model CI 通过后再将 S2.1 标记为完成。
+**Stage 3 — API**：FastAPI app + schemas、统一模型状态接口、同步 benchmark API、导出下载安全和 streaming capability gate。
