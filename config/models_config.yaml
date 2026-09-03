@@ -44,6 +44,7 @@ models:
     num_threads: 4
     experimental: true
     worker_python: ""
+    worker_python_env: EDGETTS_ARENA_COSYVOICE_PYTHON
 
   - id: melotts-zh
     name: MeloTTS Chinese
@@ -54,3 +55,4 @@ models:
     num_threads: 4
     experimental: true
     worker_python: ""
+    worker_python_env: EDGETTS_ARENA_MELOTTS_PYTHON

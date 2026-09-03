@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +32,15 @@ class ModelSpec:
     num_threads: int = 4
     experimental: bool = False
     worker_python: str = ""
+    worker_python_env: str = ""
+
+    def resolve_worker_python(self) -> str:
+        configured = self.worker_python.strip()
+        if not configured and self.worker_python_env.strip():
+            configured = os.environ.get(self.worker_python_env.strip(), "").strip()
+        if not configured:
+            return ""
+        return os.path.expanduser(os.path.expandvars(configured))
 
 
 @dataclass(slots=True)
@@ -91,20 +101,26 @@ class ModelRegistry:
         models = raw.get("models", [])
         if not isinstance(models, list):
             raise ValueError("models_config.yaml: 'models' must be a list")
-        specs = [
-            ModelSpec(
-                id=str(item["id"]),
-                name=str(item.get("name", item["id"])),
-                adapter=str(item["adapter"]),
-                enabled=bool(item.get("enabled", True)),
-                model_path=str(item.get("model_path", "")),
-                keep_in_memory=bool(item.get("keep_in_memory", False)),
-                num_threads=int(item.get("num_threads", 4)),
-                experimental=bool(item.get("experimental", False)),
-                worker_python=str(item.get("worker_python", "") or ""),
+        specs = []
+        for item in models:
+            worker_python_env = str(item.get("worker_python_env", "") or "")
+            worker_python = str(item.get("worker_python", "") or "")
+            if not worker_python and worker_python_env:
+                worker_python = os.environ.get(worker_python_env, "")
+            specs.append(
+                ModelSpec(
+                    id=str(item["id"]),
+                    name=str(item.get("name", item["id"])),
+                    adapter=str(item["adapter"]),
+                    enabled=bool(item.get("enabled", True)),
+                    model_path=str(item.get("model_path", "")),
+                    keep_in_memory=bool(item.get("keep_in_memory", False)),
+                    num_threads=int(item.get("num_threads", 4)),
+                    experimental=bool(item.get("experimental", False)),
+                    worker_python=worker_python,
+                    worker_python_env=worker_python_env,
+                )
             )
-            for item in models
-        ]
         return cls(specs, adapter_factories=adapter_factories)
 
     def ids(self) -> tuple[str, ...]:
@@ -202,6 +218,8 @@ class ModelRegistry:
         default_voice = None
         if voices:
             default_voice = "default" if "default" in voices else voices[0]
+        resolved_worker = record.spec.resolve_worker_python()
+        worker_mode = "in_process" if record.spec.keep_in_memory else ("external" if resolved_worker else "spawn")
 
         return {
             "id": record.spec.id,
@@ -214,6 +232,8 @@ class ModelRegistry:
             "capabilities": capabilities,
             "default_voice": default_voice,
             "voices": voices,
+            "worker_mode": worker_mode,
+            "worker_python_configured": bool(resolved_worker),
             "error": record.error,
         }
 

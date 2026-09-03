@@ -7,11 +7,15 @@ import sys
 from pathlib import Path
 
 
-def test_module_cli_smoke(tmp_path: Path) -> None:
-    output = tmp_path / "cli-smoke.wav"
+def _cli_env() -> dict[str, str]:
     env = os.environ.copy()
     src = str(Path(__file__).resolve().parents[1] / "src")
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
+def test_module_cli_smoke(tmp_path: Path) -> None:
+    output = tmp_path / "cli-smoke.wav"
     result = subprocess.run(
         [
             sys.executable,
@@ -26,7 +30,7 @@ def test_module_cli_smoke(tmp_path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env=_cli_env(),
     )
     assert result.returncode == 0, result.stderr
     assert output.exists()
@@ -34,9 +38,6 @@ def test_module_cli_smoke(tmp_path: Path) -> None:
 
 
 def test_doctor_cli_core_baseline(tmp_path: Path) -> None:
-    env = os.environ.copy()
-    src = str(Path(__file__).resolve().parents[1] / "src")
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run(
         [
             sys.executable,
@@ -49,23 +50,55 @@ def test_doctor_cli_core_baseline(tmp_path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env=_cli_env(),
     )
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report["ready"] is True
+    assert report["workers_requested"] is False
     checks = {item["name"]: item for item in report["checks"]}
     assert checks["dummy_synthesis"]["ok"] is True
     assert checks["fastapi_app"]["ok"] is True
     assert checks["exports_writable"]["ok"] is True
 
 
-def test_doctor_parser_supports_ui() -> None:
+def test_doctor_cli_validates_external_worker_protocol(tmp_path: Path) -> None:
+    env = _cli_env()
+    env["EDGETTS_ARENA_COSYVOICE_PYTHON"] = sys.executable
+    env["EDGETTS_ARENA_MELOTTS_PYTHON"] = sys.executable
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "edgetts_arena",
+            "doctor",
+            "--workers",
+            "--exports-root",
+            str(tmp_path / "exports"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ready"] is True
+    assert report["workers_requested"] is True
+    checks = {item["name"]: item for item in report["checks"]}
+    assert checks["worker:cosyvoice-300m-sft"]["ok"] is True
+    assert checks["worker:melotts-zh"]["ok"] is True
+
+
+def test_doctor_parser_supports_ui_and_workers() -> None:
     from edgetts_arena.cli import build_parser
 
-    args = build_parser().parse_args(["doctor", "--ui", "--exports-root", "doctor-out"])
+    args = build_parser().parse_args(
+        ["doctor", "--ui", "--workers", "--exports-root", "doctor-out"]
+    )
     assert args.command == "doctor"
     assert args.ui is True
+    assert args.workers is True
     assert args.exports_root == Path("doctor-out")
 
 

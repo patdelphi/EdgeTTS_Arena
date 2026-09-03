@@ -11,6 +11,7 @@ from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBenchmarkService
 from edgetts_arena.core.config import load_settings
 from edgetts_arena.core.model_registry import ModelRegistry
+from edgetts_arena.core.process_runner import ProcessRunner
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.logging import configure_logging
 from edgetts_arena.utils import write_wav
@@ -22,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="validate the local deployment baseline")
     doctor.add_argument("--ui", action="store_true", help="also validate Gradio UI mounting")
+    doctor.add_argument(
+        "--workers",
+        action="store_true",
+        help="also validate configured dedicated Python worker interpreters",
+    )
     doctor.add_argument("--exports-root", type=Path, default=Path("exports"))
 
     dummy = subparsers.add_parser("dummy", help="generate a deterministic dummy WAV")
@@ -64,7 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def collect_doctor_report(*, exports_root: Path, check_ui: bool = False) -> dict[str, object]:
+def collect_doctor_report(
+    *,
+    exports_root: Path,
+    check_ui: bool = False,
+    check_workers: bool = False,
+) -> dict[str, object]:
     checks: list[dict[str, object]] = []
 
     def record(name: str, ok: bool, detail: str) -> None:
@@ -123,12 +134,70 @@ def collect_doctor_report(*, exports_root: Path, check_ui: bool = False) -> dict
         except Exception as exc:
             record("gradio_ui", False, f"{type(exc).__name__}: {exc}")
 
+    if check_workers:
+        try:
+            registry = ModelRegistry.from_yaml()
+            runner = ProcessRunner()
+            worker_specs = [
+                registry.get_record(model_id).spec
+                for model_id in registry.ids()
+                if registry.get_record(model_id).spec.worker_python
+                or registry.get_record(model_id).spec.worker_python_env
+            ]
+            if not worker_specs:
+                record("external_workers", True, "no dedicated worker interpreters configured")
+            for spec in worker_specs:
+                executable = spec.resolve_worker_python()
+                check_name = f"worker:{spec.id}"
+                if not executable:
+                    detail = (
+                        f"environment variable {spec.worker_python_env} is not set"
+                        if spec.worker_python_env
+                        else "worker_python is empty"
+                    )
+                    record(check_name, False, detail)
+                    continue
+                probe_audio = exports_root / f".edgetts-arena-worker-{spec.id}.wav"
+                task = {
+                    "adapter": "dummy",
+                    "model_path": "",
+                    "text": "external worker doctor",
+                    "num_threads": 1,
+                    "infer_kwargs": {"seed": 0},
+                    "audio_path": str(probe_audio),
+                }
+                try:
+                    result = runner.run_external_worker(
+                        executable,
+                        "single",
+                        task,
+                        timeout_sec=10.0,
+                    )
+                    payload = result.value if isinstance(result.value, dict) else {}
+                    ok = (
+                        result.status == "success"
+                        and payload.get("status") == "success"
+                        and probe_audio.is_file()
+                        and probe_audio.stat().st_size > 44
+                    )
+                    detail = (
+                        f"external protocol ok pid={result.pid}"
+                        if ok
+                        else result.error_message or str(payload.get("error") or "external worker probe failed")
+                    )
+                    record(check_name, ok, detail)
+                finally:
+                    probe_audio.unlink(missing_ok=True)
+        except Exception as exc:
+            record("external_workers", False, f"{type(exc).__name__}: {exc}")
+
     ready = all(bool(check["ok"]) for check in checks)
     return {
         "ready": ready,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "ui_requested": check_ui,
+        "workers_requested": check_workers,
         "checks": checks,
     }
 
@@ -139,7 +208,11 @@ def main() -> int:
     configure_logging(settings.log_level)
 
     if args.command == "doctor":
-        report = collect_doctor_report(exports_root=args.exports_root, check_ui=args.ui)
+        report = collect_doctor_report(
+            exports_root=args.exports_root,
+            check_ui=args.ui,
+            check_workers=args.workers,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ready"] else 1
 
