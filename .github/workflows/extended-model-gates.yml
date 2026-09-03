@@ -1,6 +1,9 @@
 name: Extended Model Gates
 
 on:
+  push:
+    paths:
+      - ".github/model-gates/melotts.trigger"
   workflow_dispatch:
     inputs:
       model:
@@ -15,7 +18,7 @@ on:
 
 jobs:
   melotts-cpu-smoke:
-    if: ${{ inputs.model == 'melotts' || inputs.model == 'both' }}
+    if: ${{ github.event_name == 'push' || inputs.model == 'melotts' || inputs.model == 'both' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -55,7 +58,7 @@ jobs:
           path: exports/extended-gates/
 
   cosyvoice-cpu-smoke:
-    if: ${{ inputs.model == 'cosyvoice' || inputs.model == 'both' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'cosyvoice' || inputs.model == 'both') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
