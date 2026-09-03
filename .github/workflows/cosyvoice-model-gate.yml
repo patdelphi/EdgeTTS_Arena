@@ -94,21 +94,34 @@ jobs:
               local_dir='models/cosyvoice/CosyVoice-300M-SFT',
           )
           PY
-      - name: Model preflight
+      - name: Prepare local WeText frontend assets
+        run: |
+          python scripts/prepare_cosyvoice_frontend.py --output models/cosyvoice/wetext
+          test -s models/cosyvoice/wetext/asset_manifest.json
+      - name: Offline model preflight
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
+          EDGETTS_ARENA_COSYVOICE_WETEXT_DIR: ${{ github.workspace }}/models/cosyvoice/wetext
         run: |
           python - <<'PY'
-          from cosyvoice.cli.cosyvoice import AutoModel
-          model = AutoModel(model_dir='models/cosyvoice/CosyVoice-300M-SFT')
-          speakers = list(model.list_available_spks())
-          assert speakers, 'CosyVoice SFT model exposed no speakers'
-          print('sample_rate:', model.sample_rate)
-          print('speakers:', speakers)
+          import wetext.wetext as wetext_runtime
+          from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
+
+          def forbid_snapshot_download(*args, **kwargs):
+              raise AssertionError('implicit WeText snapshot_download is forbidden during CosyVoice load')
+
+          wetext_runtime.snapshot_download = forbid_snapshot_download
+          adapter = CosyVoiceTTSAdapter()
+          adapter.load_model('models/cosyvoice/CosyVoice-300M-SFT', num_threads=2)
+          assert adapter.available_voices, 'CosyVoice SFT model exposed no speakers'
+          print('voices:', adapter.available_voices)
+          print('wetext_dir:', adapter._resolved_wetext_dir)
+          adapter.unload_model()
           PY
       - name: Real CosyVoice CPU synthesis
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
+          EDGETTS_ARENA_COSYVOICE_WETEXT_DIR: ${{ github.workspace }}/models/cosyvoice/wetext
         run: |
           python scripts/real_model_smoke.py cosyvoice \
             --model-path models/cosyvoice/CosyVoice-300M-SFT \
@@ -121,4 +134,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: cosyvoice-cpu-smoke
-          path: exports/extended-gates/
+          path: |
+            exports/extended-gates/
+            models/cosyvoice/wetext/asset_manifest.json

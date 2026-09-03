@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -12,6 +13,85 @@ from edgetts_arena.core.errors import ArenaError, ModelNotLoadedError
 
 CosyVoiceFactory = Callable[[str, int], Any]
 
+WETEXT_REQUIRED_FILES = (
+    "en/tn/tagger.fst",
+    "en/tn/verbalizer.fst",
+    "zh/tn/tagger.fst",
+    "zh/tn/verbalizer.fst",
+    "zh/tn/verbalizer_remove_erhua.fst",
+)
+
+
+def validate_wetext_assets(path: str | Path) -> Path:
+    root = Path(path).expanduser().resolve()
+    missing = [relative for relative in WETEXT_REQUIRED_FILES if not (root / relative).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "CosyVoice WeText frontend assets are incomplete under "
+            f"{root}; missing: {', '.join(missing)}"
+        )
+    return root
+
+
+def build_offline_wetext_normalizer(normalizer_cls: type[Any], root: str | Path) -> type[Any]:
+    """Build a drop-in ``wetext.Normalizer`` that never calls snapshot_download.
+
+    ``wetext==0.0.4`` downloads ``pengzhendong/wetext`` whenever tagger/verbalizer
+    paths are omitted. CosyVoice imports that class directly. This wrapper keeps
+    the old runtime but always supplies explicit local FST paths, preserving the
+    pinned upstream behavior without hidden network access during model load.
+    """
+
+    assets = validate_wetext_assets(root)
+
+    class OfflineNormalizer:
+        def __init__(
+            self,
+            *,
+            lang: str = "auto",
+            operator: str = "tn",
+            remove_erhua: bool = False,
+            enable_0_to_9: bool = False,
+            **kwargs: Any,
+        ) -> None:
+            if kwargs:
+                unsupported = ", ".join(sorted(kwargs))
+                raise ValueError(f"unsupported offline WeText options: {unsupported}")
+            if operator != "tn":
+                raise ValueError("CosyVoice offline WeText bridge currently supports TN only")
+            if lang not in {"auto", "en", "zh"}:
+                raise ValueError("CosyVoice offline WeText language must be auto, en, or zh")
+            if enable_0_to_9:
+                raise ValueError("enable_0_to_9 is only meaningful for ITN and is not supported here")
+
+            self.lang = lang
+            self._models: dict[str, Any] = {}
+            languages = ("en", "zh") if lang == "auto" else (lang,)
+            for language in languages:
+                verbalizer = "verbalizer.fst"
+                if language == "zh" and remove_erhua:
+                    verbalizer = "verbalizer_remove_erhua.fst"
+                self._models[language] = normalizer_cls(
+                    tagger_path=str(assets / language / "tn" / "tagger.fst"),
+                    verbalizer_path=str(assets / language / "tn" / verbalizer),
+                    lang=language,
+                    operator="tn",
+                    remove_erhua=remove_erhua,
+                )
+
+        @staticmethod
+        def _contains_chinese(text: str) -> bool:
+            return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+        def normalize(self, text: str) -> str:
+            language = self.lang
+            if language == "auto":
+                language = "zh" if self._contains_chinese(text) else "en"
+            return self._models[language].normalize(text)
+
+    OfflineNormalizer.__name__ = "OfflineCosyVoiceWetextNormalizer"
+    return OfflineNormalizer
+
 
 class CosyVoiceTTSAdapter(BaseTTSAdapter):
     """SFT-only CPU adapter for the official QwenAudio/CosyVoice runtime.
@@ -19,6 +99,10 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
     This deliberately targets ``CosyVoice-300M-SFT`` style models. CosyVoice2/3
     zero-shot inference requires prompt audio/text and therefore does not fit the
     current Arena voice-id-only request contract without a schema extension.
+
+    For reproducible deployment the pinned ``wetext==0.0.4`` frontend is forced
+    to use local FST files. Set ``EDGETTS_ARENA_COSYVOICE_WETEXT_DIR`` or place
+    them in ``<CosyVoice model parent>/wetext``.
     """
 
     id = "cosyvoice"
@@ -37,9 +121,12 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
         *,
         model_factory: CosyVoiceFactory | None = None,
         runtime_version: str | None = None,
+        wetext_dir: str | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._runtime_version = runtime_version
+        self._configured_wetext_dir = Path(wetext_dir).expanduser() if wetext_dir else None
+        self._resolved_wetext_dir: Path | None = None
         self._engine: Any | None = None
         self._model_path: Path | None = None
         self._num_threads = 1
@@ -57,7 +144,7 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
         if not (path / "cosyvoice.yaml").is_file():
             raise ValueError("CosyVoice model directory must contain cosyvoice.yaml")
 
-        factory, runtime_version = self._runtime()
+        factory, runtime_version = self._runtime(path.resolve())
         engine = factory(str(path.resolve()), num_threads)
         voices = tuple(str(item) for item in engine.list_available_spks())
         if not voices:
@@ -126,18 +213,48 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
         self.is_loaded = False
         gc.collect()
 
-    def _runtime(self) -> tuple[CosyVoiceFactory, str]:
+    def _runtime(self, model_path: Path) -> tuple[CosyVoiceFactory, str]:
         if self._model_factory is not None:
             return self._model_factory, self._runtime_version or "injected"
         try:
             import torch
-            from cosyvoice.cli.cosyvoice import AutoModel
+            import wetext
         except ImportError as exc:
             raise ArenaError(
                 1002,
                 "CosyVoice runtime is not installed. Install the official QwenAudio/CosyVoice source checkout and its dependencies.",
                 error_type="model_unavailable",
             ) from exc
+
+        wetext_dir = self._configured_wetext_dir
+        if wetext_dir is None:
+            configured = os.environ.get("EDGETTS_ARENA_COSYVOICE_WETEXT_DIR")
+            wetext_dir = Path(configured).expanduser() if configured else model_path.parent / "wetext"
+        try:
+            self._resolved_wetext_dir = validate_wetext_assets(wetext_dir)
+        except FileNotFoundError as exc:
+            raise ArenaError(
+                1002,
+                f"{exc}. Run scripts/prepare_cosyvoice_frontend.py before loading CosyVoice.",
+                error_type="model_unavailable",
+            ) from exc
+
+        offline_normalizer = build_offline_wetext_normalizer(wetext.Normalizer, self._resolved_wetext_dir)
+        wetext.Normalizer = offline_normalizer
+
+        try:
+            from cosyvoice.cli.cosyvoice import AutoModel
+            import cosyvoice.cli.frontend as frontend_module
+        except ImportError as exc:
+            raise ArenaError(
+                1002,
+                "CosyVoice runtime is not installed. Install the official QwenAudio/CosyVoice source checkout and its dependencies.",
+                error_type="model_unavailable",
+            ) from exc
+
+        # Cover both first import and already-imported frontend modules.
+        frontend_module.ZhNormalizer = offline_normalizer
+        frontend_module.EnNormalizer = offline_normalizer
 
         def factory(model_dir: str, num_threads: int) -> Any:
             torch.set_num_threads(num_threads)
@@ -182,6 +299,7 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
             "threads": self._num_threads,
             "streaming": streaming,
             "mode": "sft",
+            "wetext_dir": str(self._resolved_wetext_dir) if self._resolved_wetext_dir else None,
         }
 
     def _require_loaded(self) -> Any:

@@ -1,2 +1,2 @@
-gate=3
-reason=whisper-no-build-isolation
+gate=4
+reason=offline-wetext-assets

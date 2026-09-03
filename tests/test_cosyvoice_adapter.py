@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from edgetts_arena.adapters.cosyvoice_adapter import CosyVoiceTTSAdapter
+from edgetts_arena.adapters.cosyvoice_adapter import (
+    CosyVoiceTTSAdapter,
+    WETEXT_REQUIRED_FILES,
+    build_offline_wetext_normalizer,
+    validate_wetext_assets,
+)
 from edgetts_arena.core.errors import ArenaError, ModelNotLoadedError
 
 
@@ -24,10 +29,31 @@ class FakeCosyVoice:
         yield {"tts_speech": np.full((1, 80), -0.1, dtype=np.float32)}
 
 
+class FakeWetextNormalizer:
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls.append(kwargs)
+
+    def normalize(self, text: str) -> str:
+        lang = str(self.kwargs["lang"])
+        return f"{lang}:{text}"
+
+
 def _model_dir(tmp_path: Path) -> Path:
     path = tmp_path / "CosyVoice-300M-SFT"
     path.mkdir()
     (path / "cosyvoice.yaml").write_text("sample_rate: 24000\n", encoding="utf-8")
+    return path
+
+
+def _wetext_dir(tmp_path: Path) -> Path:
+    path = tmp_path / "wetext"
+    for relative in WETEXT_REQUIRED_FILES:
+        target = path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"fst")
     return path
 
 
@@ -71,3 +97,32 @@ def test_cosyvoice_requires_load() -> None:
     adapter = CosyVoiceTTSAdapter(model_factory=lambda path, threads: FakeCosyVoice())
     with pytest.raises(ModelNotLoadedError):
         adapter.infer("hello")
+
+
+def test_validate_wetext_assets_requires_all_files(tmp_path: Path) -> None:
+    path = _wetext_dir(tmp_path)
+    assert validate_wetext_assets(path) == path.resolve()
+    (path / "en/tn/tagger.fst").unlink()
+    with pytest.raises(FileNotFoundError, match="en/tn/tagger.fst"):
+        validate_wetext_assets(path)
+
+
+def test_offline_wetext_normalizer_uses_explicit_local_paths(tmp_path: Path) -> None:
+    FakeWetextNormalizer.calls.clear()
+    root = _wetext_dir(tmp_path)
+    normalizer_cls = build_offline_wetext_normalizer(FakeWetextNormalizer, root)
+    normalizer = normalizer_cls(remove_erhua=False)
+
+    assert normalizer.normalize("你好 123") == "zh:你好 123"
+    assert normalizer.normalize("hello 123") == "en:hello 123"
+    assert len(FakeWetextNormalizer.calls) == 2
+    assert all("tagger_path" in call and "verbalizer_path" in call for call in FakeWetextNormalizer.calls)
+    assert all(str(root.resolve()) in str(call["tagger_path"]) for call in FakeWetextNormalizer.calls)
+
+
+def test_offline_wetext_remove_erhua_uses_explicit_variant(tmp_path: Path) -> None:
+    FakeWetextNormalizer.calls.clear()
+    root = _wetext_dir(tmp_path)
+    normalizer_cls = build_offline_wetext_normalizer(FakeWetextNormalizer, root)
+    normalizer_cls(lang="zh", remove_erhua=True)
+    assert FakeWetextNormalizer.calls[0]["verbalizer_path"].endswith("zh/tn/verbalizer_remove_erhua.fst")
