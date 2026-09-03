@@ -2,7 +2,7 @@
 
 EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性能评测与试听工作台。
 
-当前实现状态：**Stage 0 Bootstrap 已实现，本地测试通过；Stage 1 Core Runtime 下一步。**
+当前实现状态：**Stage 0 + Stage 1 已实现，本地 15 tests passed；Stage 2 首批真实模型下一步。**
 
 - 开发规格：[`docs/README.md`](./docs/README.md)
 - 开发基线与冻结决策：[`docs/00_开发准备与文档审阅.md`](./docs/00_开发准备与文档审阅.md)
@@ -58,6 +58,13 @@ python -m edgetts_arena dummy \
 edgetts-arena dummy --text "hello" --output exports/dummy.wav
 ```
 
+## Stage 1 已实现
+
+- `ModelRegistry`：配置加载、模型状态、lazy load / unload
+- `MetricsCollector`：Inference Time、Audio Duration、RTF、RSS、CPU；非流式 TTFB=`None`
+- `ResourceGuard`：soft/hard memory guard、线程数约束
+- `ProcessRunner`：独立子进程执行、异常回传、timeout terminate/kill
+
 ## 下一阶段
 
-**Stage 1 — Core Runtime**：实现 `ModelRegistry`、`MetricsCollector`、`ProcessRunner` 和 `ResourceGuard`，将 Dummy Adapter 从单体 smoke test 接入统一运行时。
+**Stage 2 — First Adapters**：开始真实 CPU TTS 接入，优先 Piper，然后 Kokoro；Qwen3-TTS 保持 experimental/feature flag。

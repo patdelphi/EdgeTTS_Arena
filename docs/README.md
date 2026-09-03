@@ -1,7 +1,7 @@
 # EdgeTTS-Arena 文档
 
 > 文档基线：v0.2（2026-09-03）  
-> 当前状态：**Stage 0 已实现；进入 Stage 1 Core Runtime**
+> 当前状态：**Stage 0 + Stage 1 已实现；进入 Stage 2 首批真实模型**
 
 EdgeTTS-Arena 是面向 1B 参数量以下、CPU/端侧部署优先的 TTS 多模型评测、横向对比与试听工作台。
 
