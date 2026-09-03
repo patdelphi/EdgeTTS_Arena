@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import platform
 import sys
 from typing import Any
 
 from edgetts_arena.core.worker_runtime import run_isolated_model, run_isolated_repeated_model
 
 RESULT_PREFIX = "__EDGETTS_ARENA_RESULT__="
+PROTOCOL_VERSION = 1
 
 
 def _emit(payload: dict[str, Any]) -> None:
-    print(f"{RESULT_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}", flush=True)
+    framed = dict(payload)
+    framed["_worker_runtime"] = {
+        "protocol_version": PROTOCOL_VERSION,
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+    }
+    print(
+        f"{RESULT_PREFIX}{json.dumps(framed, ensure_ascii=False, separators=(',', ':'))}",
+        flush=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

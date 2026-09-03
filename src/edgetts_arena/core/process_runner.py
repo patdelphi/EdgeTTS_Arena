@@ -4,6 +4,7 @@ import json
 import multiprocessing as mp
 import os
 from pathlib import Path
+import platform
 import queue
 import signal
 import subprocess
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 _EXTERNAL_RESULT_PREFIX = "__EDGETTS_ARENA_RESULT__="
+_EXTERNAL_PROTOCOL_VERSION = 1
+_DIAGNOSTIC_TEXT_LIMIT = 8192
 
 
 def _exit_diagnostics(exit_code: int | None) -> tuple[str, str | None, bool]:
@@ -26,12 +29,27 @@ def _exit_diagnostics(exit_code: int | None) -> tuple[str, str | None, bool]:
             signal_name = signal.Signals(signal_number).name
         except (ValueError, AttributeError):
             signal_name = f"SIGNAL_{signal_number}"
-        # SIGKILL is a common symptom of a kernel/cgroup OOM kill, but it can
-        # also be an external administrative kill. Keep this deliberately
-        # probabilistic rather than claiming an OOM without kernel evidence.
         oom_suspected = signal_number == getattr(signal, "SIGKILL", 9)
         return "signal", signal_name, oom_suspected
     return "exit_code", None, False
+
+
+def _tail_text(value: str | None, *, limit: int = _DIAGNOSTIC_TEXT_LIMIT) -> str | None:
+    if not value:
+        return None
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    marker = "...<diagnostic output truncated>...\n"
+    return marker + text[-max(0, limit - len(marker)) :]
+
+
+def _current_runtime(protocol: str) -> dict[str, Any]:
+    return {
+        "protocol": protocol,
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,15 +65,19 @@ class ProcessResult:
     termination: str | None = None
     signal_name: str | None = None
     oom_suspected: bool = False
+    mode: str | None = None
+    runtime: dict[str, Any] | None = None
 
     def diagnostics(self) -> dict[str, Any]:
         return {
+            "mode": self.mode,
             "pid": self.pid,
             "exit_code": self.exit_code,
             "elapsed_ms": self.elapsed_ms,
             "termination": self.termination,
             "signal": self.signal_name,
             "oom_suspected": self.oom_suspected,
+            "runtime": self.runtime,
         }
 
 
@@ -69,6 +91,8 @@ class ProcessTimeoutError(TimeoutError):
         elapsed_ms: float | None = None,
         termination: str = "timeout_terminate",
         signal_name: str | None = None,
+        mode: str | None = None,
+        runtime: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.pid = pid
@@ -76,17 +100,19 @@ class ProcessTimeoutError(TimeoutError):
         self.elapsed_ms = elapsed_ms
         self.termination = termination
         self.signal_name = signal_name
+        self.mode = mode
+        self.runtime = runtime
 
     def diagnostics(self) -> dict[str, Any]:
         return {
+            "mode": self.mode,
             "pid": self.pid,
             "exit_code": self.exit_code,
             "elapsed_ms": self.elapsed_ms,
             "termination": self.termination,
             "signal": self.signal_name,
-            # A watchdog-triggered SIGKILL/SIGTERM is caused by us, so it is
-            # not evidence of OOM.
             "oom_suspected": False,
+            "runtime": self.runtime,
         }
 
 
@@ -127,6 +153,7 @@ class ProcessRunner:
             raise ValueError("timeout_sec must be positive")
 
         started = time.perf_counter()
+        runtime = _current_runtime("multiprocessing-spawn")
         result_queue = self._context.Queue(maxsize=1)
         process = self._context.Process(
             target=_worker_entry,
@@ -157,6 +184,8 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
+                mode="spawn",
+                runtime=runtime,
             )
 
         exit_code = process.exitcode
@@ -182,6 +211,8 @@ class ProcessRunner:
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                mode="spawn",
+                runtime=runtime,
             )
         finally:
             result_queue.close()
@@ -192,14 +223,16 @@ class ProcessRunner:
             status=status,
             value=value,
             error_type=error_type,
-            error_message=error_message,
-            traceback=tb,
+            error_message=_tail_text(error_message),
+            traceback=_tail_text(tb),
             exit_code=exit_code,
             pid=pid,
             elapsed_ms=elapsed_ms,
             termination=termination,
             signal_name=signal_name,
             oom_suspected=oom_suspected,
+            mode="spawn",
+            runtime=runtime,
         )
 
     def run_external_worker(
@@ -210,7 +243,7 @@ class ProcessRunner:
         *,
         timeout_sec: float,
     ) -> ProcessResult:
-        """Run the JSON worker protocol under another Python interpreter/venv."""
+        """Run the versioned JSON worker protocol under another Python interpreter/venv."""
         if timeout_sec <= 0:
             raise ValueError("timeout_sec must be positive")
         if mode not in {"single", "repeated"}:
@@ -240,9 +273,10 @@ class ProcessRunner:
             return ProcessResult(
                 status="error",
                 error_type=type(exc).__name__,
-                error_message=f"failed to start external worker: {exc}",
+                error_message=_tail_text(f"failed to start external worker: {exc}"),
                 elapsed_ms=elapsed_ms,
                 termination="spawn_error",
+                mode="external",
             )
 
         pid = process.pid
@@ -269,23 +303,26 @@ class ProcessRunner:
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
+                mode="external",
             )
 
         exit_code = process.returncode
         termination, signal_name, oom_suspected = _exit_diagnostics(exit_code)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        stderr_tail = _tail_text(stderr)
         if exit_code != 0:
             return ProcessResult(
                 status="error",
                 error_type="ExternalWorkerExited",
-                error_message=(stderr.strip() or f"external worker exited with code {exit_code}"),
-                traceback=stderr or None,
+                error_message=stderr_tail or f"external worker exited with code {exit_code}",
+                traceback=stderr_tail,
                 exit_code=exit_code,
                 pid=pid,
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                mode="external",
             )
 
         result_line = next(
@@ -297,29 +334,65 @@ class ProcessRunner:
                 status="error",
                 error_type="ExternalWorkerProtocolError",
                 error_message="external worker completed without a result frame",
-                traceback=stderr or None,
+                traceback=stderr_tail,
                 exit_code=exit_code,
                 pid=pid,
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                mode="external",
             )
         try:
-            value = json.loads(result_line[len(_EXTERNAL_RESULT_PREFIX):])
+            value = json.loads(result_line[len(_EXTERNAL_RESULT_PREFIX) :])
         except json.JSONDecodeError as exc:
             return ProcessResult(
                 status="error",
                 error_type="ExternalWorkerProtocolError",
                 error_message=f"invalid external worker result JSON: {exc}",
-                traceback=stderr or None,
+                traceback=stderr_tail,
                 exit_code=exit_code,
                 pid=pid,
                 elapsed_ms=elapsed_ms,
                 termination=termination,
                 signal_name=signal_name,
                 oom_suspected=oom_suspected,
+                mode="external",
             )
+        if not isinstance(value, dict):
+            return ProcessResult(
+                status="error",
+                error_type="ExternalWorkerProtocolError",
+                error_message="external worker result frame must contain a JSON object",
+                traceback=stderr_tail,
+                exit_code=exit_code,
+                pid=pid,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+                oom_suspected=oom_suspected,
+                mode="external",
+            )
+
+        raw_runtime = value.pop("_worker_runtime", None)
+        if not isinstance(raw_runtime, dict) or raw_runtime.get("protocol_version") != _EXTERNAL_PROTOCOL_VERSION:
+            found = raw_runtime.get("protocol_version") if isinstance(raw_runtime, dict) else None
+            return ProcessResult(
+                status="error",
+                error_type="ExternalWorkerProtocolError",
+                error_message=(
+                    f"external worker protocol mismatch: expected {_EXTERNAL_PROTOCOL_VERSION}, got {found}"
+                ),
+                traceback=stderr_tail,
+                exit_code=exit_code,
+                pid=pid,
+                elapsed_ms=elapsed_ms,
+                termination=termination,
+                signal_name=signal_name,
+                oom_suspected=oom_suspected,
+                mode="external",
+            )
+        runtime = {"protocol": "external-json", **raw_runtime}
         return ProcessResult(
             status="success",
             value=value,
@@ -329,4 +402,6 @@ class ProcessRunner:
             termination=termination,
             signal_name=signal_name,
             oom_suspected=oom_suspected,
+            mode="external",
+            runtime=runtime,
         )
