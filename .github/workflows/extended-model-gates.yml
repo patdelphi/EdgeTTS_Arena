@@ -4,7 +4,6 @@ on:
   push:
     paths:
       - ".github/model-gates/melotts.trigger"
-      - ".github/model-gates/cosyvoice.trigger"
   workflow_dispatch:
     inputs:
       model:
@@ -19,14 +18,7 @@ on:
 
 jobs:
   melotts-cpu-smoke:
-    if: >-
-      ${{
-        (github.event_name == 'push' &&
-          (contains(github.event.head_commit.added, '.github/model-gates/melotts.trigger') ||
-           contains(github.event.head_commit.modified, '.github/model-gates/melotts.trigger'))) ||
-        (github.event_name == 'workflow_dispatch' &&
-          (inputs.model == 'melotts' || inputs.model == 'both'))
-      }}
+    if: ${{ github.event_name == 'push' || inputs.model == 'melotts' || inputs.model == 'both' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -55,12 +47,7 @@ jobs:
           python - <<'PY'
           import nltk
           from nltk import pos_tag
-
-          for package in (
-              "averaged_perceptron_tagger",
-              "averaged_perceptron_tagger_eng",
-              "cmudict",
-          ):
+          for package in ("averaged_perceptron_tagger", "averaged_perceptron_tagger_eng", "cmudict"):
               if not nltk.download(package, quiet=True):
                   raise RuntimeError(f"failed to download NLTK resource: {package}")
           tagged = pos_tag(["EdgeTTS", "Arena"])
@@ -74,12 +61,7 @@ jobs:
           from huggingface_hub import hf_hub_download
           revision = "082ca057e44f1e52ec47e1622a30286019e8a3ef"
           for filename in ("config.json", "checkpoint.pth"):
-              hf_hub_download(
-                  repo_id="myshell-ai/MeloTTS-Chinese",
-                  filename=filename,
-                  revision=revision,
-                  local_dir="models/melotts/zh",
-              )
+              hf_hub_download(repo_id="myshell-ai/MeloTTS-Chinese", filename=filename, revision=revision, local_dir="models/melotts/zh")
           PY
           cat > models/melotts/zh/model.json <<'JSON'
           {"language":"ZH","config_path":"config.json","ckpt_path":"checkpoint.pth"}
@@ -100,121 +82,5 @@ jobs:
           path: exports/extended-gates/
 
   cosyvoice-cpu-smoke:
-    if: >-
-      ${{
-        (github.event_name == 'push' &&
-          (contains(github.event.head_commit.added, '.github/model-gates/cosyvoice.trigger') ||
-           contains(github.event.head_commit.modified, '.github/model-gates/cosyvoice.trigger'))) ||
-        (github.event_name == 'workflow_dispatch' &&
-          (inputs.model == 'cosyvoice' || inputs.model == 'both'))
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: pip
-      - name: Install OS dependencies
-        run: sudo apt-get update && sudo apt-get install -y sox libsox-dev
-      - name: Checkout pinned CosyVoice source
-        run: |
-          git clone https://github.com/QwenAudio/CosyVoice.git vendor/CosyVoice
-          git -C vendor/CosyVoice checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
-          git -C vendor/CosyVoice submodule update --init --recursive
-      - name: Build CPU-only CosyVoice requirements
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('vendor/CosyVoice/requirements.txt')
-          target = Path('vendor/CosyVoice/requirements.cpu.txt')
-          blocked = (
-              '--extra-index-url',
-              'deepspeed==',
-              'onnxruntime-gpu==',
-              'tensorrt-cu12',
-              'torch==',
-              'torchaudio==',
-          )
-          kept = []
-          removed = []
-          for raw in source.read_text(encoding='utf-8').splitlines():
-              stripped = raw.strip()
-              if stripped.startswith(blocked):
-                  removed.append(stripped)
-              else:
-                  kept.append(raw)
-          target.write_text('\n'.join(kept) + '\n', encoding='utf-8')
-          print('Removed GPU/runtime-specific requirements:')
-          print('\n'.join(removed))
-          assert any(line.startswith('onnxruntime-gpu==') for line in removed)
-          assert any(line.startswith('torch==') for line in removed)
-          assert any(line.startswith('tensorrt-cu12') for line in removed)
-          PY
-      - name: Install project and CPU-only CosyVoice runtime
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.3.1" "torchaudio==2.3.1"
-          python -m pip install -r vendor/CosyVoice/requirements.cpu.txt
-          python -m pip install "onnxruntime==1.18.0" huggingface_hub
-      - name: CPU runtime preflight
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
-        run: |
-          python - <<'PY'
-          import torch
-          import onnxruntime as ort
-          from cosyvoice.cli.cosyvoice import AutoModel
-
-          assert torch.cuda.is_available() is False
-          providers = ort.get_available_providers()
-          assert 'CPUExecutionProvider' in providers
-          assert 'CUDAExecutionProvider' not in providers
-          assert callable(AutoModel)
-          print('torch:', torch.__version__)
-          print('onnxruntime:', ort.__version__, providers)
-          PY
-      - name: Download pinned CosyVoice 300M SFT model
-        env:
-          HF_HOME: ${{ runner.temp }}/hf-cache
-        run: |
-          mkdir -p models/cosyvoice exports/extended-gates
-          python - <<'PY'
-          from huggingface_hub import snapshot_download
-          snapshot_download(
-              'FunAudioLLM/CosyVoice-300M-SFT',
-              revision='fbb71de2afe387ed854eebd80b9f3d078c6b9869',
-              local_dir='models/cosyvoice/CosyVoice-300M-SFT',
-          )
-          PY
-      - name: Model preflight
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
-        run: |
-          python - <<'PY'
-          from cosyvoice.cli.cosyvoice import AutoModel
-          model = AutoModel(model_dir='models/cosyvoice/CosyVoice-300M-SFT')
-          speakers = list(model.list_available_spks())
-          assert speakers, 'CosyVoice SFT model exposed no speakers'
-          print('sample_rate:', model.sample_rate)
-          print('speakers:', speakers)
-          PY
-      - name: Real CosyVoice CPU synthesis
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/CosyVoice:${{ github.workspace }}/vendor/CosyVoice/third_party/Matcha-TTS
-        run: |
-          python scripts/real_model_smoke.py cosyvoice \
-            --model-path models/cosyvoice/CosyVoice-300M-SFT \
-            --text "你好，这是一条 EdgeTTS Arena 的 CosyVoice CPU 验证语音。" \
-            --threads 2 \
-            --output exports/extended-gates/cosyvoice.wav \
-            --report exports/extended-gates/cosyvoice.json
-          test -s exports/extended-gates/cosyvoice.wav
-          test -s exports/extended-gates/cosyvoice.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cosyvoice-cpu-smoke
-          path: exports/extended-gates/
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.model == 'cosyvoice' || inputs.model == 'both') }}
+    uses: ./.github/workflows/cosyvoice-model-gate.yml

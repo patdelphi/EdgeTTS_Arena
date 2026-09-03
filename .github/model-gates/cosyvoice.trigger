@@ -1,2 +1,2 @@
-gate=1
-reason=cpu-only-pinned-runtime
+gate=2
+reason=dedicated-cpu-workflow-trigger
