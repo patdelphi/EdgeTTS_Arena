@@ -2,7 +2,7 @@
 
 EdgeTTS-Arena 是一个 **CPU/端侧优先** 的本地 TTS 多模型对比、性能评测与试听工作台。
 
-当前状态：**主 Arena 已达到本地部署测试条件，可以开始本地部署测试。** Stage 0~5 MVP 已完成；Stage 6 已完成跨平台/ARM64/1-CPU smoke、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external Python worker、扩展模型 pinned bootstrap、Qwen3 官方 FP32 CPU 功能路径、Qwen3 native INT8/INT4 hosted CPU 量化验证，以及真实目标设备验收包。Qwen3 native INT8 是当前推荐 CPU 优化候选；INT8/INT4 Blind AB 人工评分与真实弱设备实测仍属于扩展验证，不阻塞主 Arena 本地部署测试。
+当前状态：**主 Arena 已达到本地部署测试条件，可以开始本地部署测试。** Stage 0~5 MVP 已完成；Stage 6 的主要工程工具链也已基本收口：跨平台/ARM64/1-CPU smoke、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external worker + pinned bootstrap、Qwen3 official FP32 与 native INT8/INT4 hosted CPU 路线、Blind AB、真实目标设备 acceptance、Concurrent 真机校准工具，以及分级 OOM evidence 均已实现。当前剩余主要是**真实人工评分与真实目标硬件数据**，不是主 Arena 启动 blocker。
 
 - 本地部署与验收：[`docs/12_本地部署与验收指南.md`](./docs/12_本地部署与验收指南.md)
 - 扩展模型：[`docs/12_第二批模型适配状态.md`](./docs/12_第二批模型适配状态.md)
@@ -24,49 +24,39 @@ edgetts-arena doctor --ui --exports-root exports/doctor
 edgetts-arena serve --ui
 ```
 
-Windows PowerShell 使用 `py -3.11 -m venv .venv` 与 `.\.venv\Scripts\Activate.ps1`。默认 API：`http://127.0.0.1:8000`，Arena：`http://127.0.0.1:8000/arena/`。
+Windows PowerShell：`py -3.11 -m venv .venv`，然后 `.\.venv\Scripts\Activate.ps1`。默认 API `http://127.0.0.1:8000`，Arena `http://127.0.0.1:8000/arena/`。
 
-主 Arena 的本地验收顺序建议：Doctor → Dummy/API → Piper → Kokoro → UI → Sequential 对比 → Blind AB → Standard Suite → ZIP/report/environment。
-
-## Benchmark / UI
-
-Arena 支持 1~4 模型、Sequential/Concurrent、TC-01~05、warm-up/repeats、ZIP、Blind AB。`config.language`、CLI `suite --language` 与 Gradio Language control 均为 capability-aware。
-
-多模型 Arena 会计算共同 voice/language 交集：只有所有所选模型都支持且存在共同值时才允许统一选择，否则各模型使用自身默认。这使同一模型的不同量化 backend 可以固定相同 voice/language/seed 做公平 Blind AB。
+建议验收顺序：Doctor → Dummy/API → Piper → Kokoro → UI → Sequential 对比 → Blind AB → Standard Suite → ZIP/report/environment。
 
 ## 扩展模型 pinned bootstrap
 
-`scripts/bootstrap_extended_model.py` 为 Qwen3 official、MeloTTS、CosyVoice 生成并执行与真实 heavy gate 对齐的专用 venv/依赖/资产/Doctor 流程。
-
-默认只打印计划，**不会自动联网或下载重模型**：
+Qwen3 official、MeloTTS、CosyVoice：
 
 ```bash
+# 默认只打印计划，不联网、不下载模型
 python scripts/bootstrap_extended_model.py qwen3 --python python3.11
 python scripts/bootstrap_extended_model.py melotts --python python3.10
 python scripts/bootstrap_extended_model.py cosyvoice --python python3.10
+
+# 显式执行重操作
+python scripts/bootstrap_extended_model.py qwen3 --python python3.11 --execute
 ```
 
-确认计划后显式执行：
+成功后生成 `bootstrap_plan.json`、`env.sh`、`env.ps1`。bootstrap 固定与 hosted heavy gate 对齐的 runtime/source/model revision，并做 runtime preflight + targeted Worker Doctor。bootstrap success ≠ real-model synthesis success ≠ target-device performance pass。
+
+### Qwen3 native INT8/INT4 推荐 CPU 路线
+
+native pure-C 路线有独立 planner：
 
 ```bash
-python scripts/bootstrap_extended_model.py qwen3 --python python3.11 --execute
-python scripts/bootstrap_extended_model.py melotts --python python3.10 --execute
-python scripts/bootstrap_extended_model.py cosyvoice --python python3.10 --execute
+# 仅打印 plan
+python scripts/bootstrap_qwen3_native.py --python python3.11
+
+# Linux/macOS 系统依赖准备好后执行
+python scripts/bootstrap_qwen3_native.py --python python3.11 --execute
 ```
 
-CosyVoice 仍要求主机先提供 `git`、`sox`（Linux 通常还需 `libsox-dev`）；bootstrap 不会自动执行 `sudo` 或修改系统包。每个 profile 都会检查指定 Python 版本、固定 runtime/source/model revision、做 runtime preflight，并在最后执行定向 `doctor --worker MODEL_ID`。
-
-成功后生成：
-
-```text
-exports/bootstrap/<model>/bootstrap_plan.json
-exports/bootstrap/<model>/env.sh
-exports/bootstrap/<model>/env.ps1
-```
-
-Linux/macOS 启动主 Arena 前可执行 `source exports/bootstrap/<model>/env.sh`；Windows PowerShell 可运行对应 `env.ps1`。`--skip-assets` 可只准备 runtime/venv，`--no-doctor` 可跳过最终 Doctor。
-
-资产 helper 与 heavy gate 共用同一准备逻辑：Qwen3 snapshot 默认 pin 到 Arena 已验证 revision；MeloTTS 生成 `model.json` + SHA-256 manifest；CosyVoice CPU requirements、300M SFT snapshot 与 WeText 本地前端均有独立 helper。
+它固定 native runtime revision 与官方 0.6B CustomVoice model revision，执行 `make blas`、`--caps`、`--self-test`，再生成匹配的 INT8/INT4 manifests 并做 Arena Adapter preflight。Linux 需要 C toolchain + OpenBLAS development library；macOS 使用 Accelerate。Windows 原生不是当前验证基线，建议 WSL/Linux。
 
 ## Qwen3 hosted CPU 基线
 
@@ -77,35 +67,15 @@ Linux/macOS 启动主 Arena 前可执行 `source exports/bootstrap/<model>/env.s
 | native INT8 | 4 | 7.52s | 1.984 | 3129MB |
 | native INT4 | 4 | 8.48s | 2.432 | **2899MB** |
 
-官方 FP32 是兼容/功能基线；native INT8@2 是当前 CPU 优化候选。INT4 只作为更低内存实验项；相同 seed/text 下输出时长发生变化，因此不宣称与 INT8 音质等价。
+当前 CPU 优化候选是 **native INT8@2**。INT4 只作为更低内存实验项；相同 seed/text 下输出时长不同，因此不宣称与 INT8 音质等价。
 
-## Qwen3 INT8 / INT4 Blind AB
+## Blind AB
 
-一次生成成对 manifests：
+`qwen3-tts-0.6b-native-int8` 与 `qwen3-tts-0.6b-native-int4` 已作为 disabled/experimental 项进入 catalog。多模型 UI 使用共同 voice/language 交集，可固定相同 text/voice/language/seed 后匿名评分 Naturalness / Intelligibility / Prosody。**工具 ready 不等于人工质量 gate passed。**
 
-```bash
-python scripts/prepare_qwen3_native_variants.py \
-  --binary runtime/qwen3-tts-c/qwen_tts \
-  --model-dir models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-  --output-root models/qwen3-native \
-  --default-voice Vivian \
-  --default-language Chinese
-```
+## 真实目标设备验收
 
-默认 catalog 包含两个 disabled/experimental 项：
-
-```text
-qwen3-tts-0.6b-native-int8   # hosted 推荐基线：2 threads
-qwen3-tts-0.6b-native-int4   # hosted 实验基线：4 threads
-```
-
-A/B 工具链 ready 不等于音质 gate passed。在真实人工评分产生前，INT4 继续保持实验路线。
-
-## 真实目标设备验收包
-
-`scripts/target_device_acceptance.py` 用于树莓派、ARM、低功耗 x86 等实际设备。它连续运行真实 synthesis，保存每次 WAV/JSON、系统环境、聚合指标和 ZIP，并按**最差一次** RTF/RSS 做可选阈值判定。
-
-示例：
+单模型连续真实 synthesis：
 
 ```bash
 unset OPENBLAS_NUM_THREADS
@@ -119,11 +89,38 @@ python scripts/target_device_acceptance.py qwen3-native \
   --output-dir exports/target-device/qwen3-int8
 ```
 
-阈值由目标硬件/业务自行定义，项目不把 GitHub-hosted 数字冒充真机承诺。native runtime 不应预设 `OPENBLAS_NUM_THREADS`。
+Sequential baseline 与 Concurrent pressure 成对校准：
 
-## Stage 6 剩余重点
+```bash
+python scripts/target_device_concurrent_calibration.py \
+  --models piper kokoro \
+  --text "Concurrent target-device calibration." \
+  --threads 2 --runs 3 \
+  --max-rtf-slowdown-ratio 1.8 \
+  --output-dir exports/target-concurrent/piper-kokoro
+```
 
-- 实际执行 Qwen native INT8/INT4 Blind AB 并积累人工评分
-- 用目标设备验收包完成真实 ARM/树莓派/低功耗弱设备实机验证
-- Concurrent 真实设备资源校准
-- 平台特定确定性 OOM attribution（可选）
+Concurrent 报告保留每对 run_id、requested/effective thread budget、ResourceGuard warnings、每模型 Sequential/Concurrent RTF/RSS/CPU 与 `concurrent_rtf / sequential_rtf` slowdown。
+
+两个目标设备工具都把每次 run、environment、aggregate/report 与 ZIP 保留为证据包。**默认拒绝复用非空 output-dir 或已有 ZIP**，避免旧结果混入新报告；确需重跑时显式加 `--overwrite`，脚本会先清理旧目录和 archive。
+
+性能阈值由目标硬件/业务 SLA 定义；项目不把 GitHub-hosted 数字冒充真机承诺。
+
+## Worker OOM evidence
+
+Worker diagnostics 现在区分：
+
+- `worker_memory_error`：显式 MemoryError / worker_memory_error；
+- `cgroup_oom_kill_observed`：SIGKILL 且 Linux cgroup v2 `memory.events.oom_kill` 在执行窗口增加；
+- `sigkill_suspected`：仅有 SIGKILL，证据不足；
+- `none`：无 OOM 证据；Arena watchdog timeout 后自己的 terminate/kill 也保持 `none`。
+
+cgroup 计数是 cgroup-wide，因此 `observed` 不写成“已经证明该 PID 被 OOM killer 杀死”。
+
+## Stage 6 剩余
+
+- 实际执行 Qwen native INT8/INT4 多文本/多语言人工 Blind AB；
+- 在真实 ARM/树莓派/低功耗设备执行 target-device acceptance；
+- 在真实目标设备执行 Concurrent calibration，并据此调整部署资源预算。
+
+以上均不阻塞主 Arena 本地部署测试。
