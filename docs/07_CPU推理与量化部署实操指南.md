@@ -1,164 +1,86 @@
 # CPU 推理与量化部署实操指南
 
-> 版本：v0.3 ｜ 已纳入主 Arena 本地部署与 CosyVoice/MeloTTS 独立真实 CPU gate 结论
+> 版本：v0.4 ｜ 已纳入 Qwen3 official FP32 与 native INT8/INT4 hosted CPU 实测
 
 ## 1. CPU 优化顺序
 
-1. **限制线程**：先控制 OMP/MKL/PyTorch/ONNX Runtime 线程数。
-2. **选择稳定 CPU runtime**：优先模型官方支持路径，其次再评估社区转换方案。
-3. **减少内存带宽压力**：在模型支持时评估 INT8/低位量化。
-4. **减少常驻模型数**：大模型默认 lazy load。
-5. **Affinity / cgroup-aware budget**：仅在平台支持时启用，并以进程 affinity、cgroup quota、host CPU 中最保守值作为预算。
+1. 限制线程并记录 effective budget。
+2. 先验证官方 CPU runtime 作为兼容基线。
+3. 对内存带宽敏感模型评估 INT8/低位量化。
+4. 大模型 lazy load / process isolation。
+5. affinity/cgroup-aware budget 与真实设备校准。
 
-## 2. 本地部署拓扑
+## 2. 主 Arena 与扩展 runtime
 
-当前冻结为两类环境：
+主 Arena 推荐 Python 3.11，Dummy/Piper/Kokoro 与 UI/API 在同一环境。Qwen official/CosyVoice/MeloTTS 使用独立 Python worker；Qwen native 是本地 C binary + manifest，可在普通 Python worker 中启动 C 子进程，不要求 PyTorch。
 
-### 2.1 主 Arena 环境
+## 3. 线程规则
 
-用于 Dummy / Piper / Kokoro、FastAPI、Gradio UI、Standard Benchmark Suite。
+PyTorch 使用 `torch.set_num_threads()`；ONNX Runtime 使用 `intra_op_num_threads` + `inter_op_num_threads=1`。
 
-推荐 Python 3.11：
+通用 OMP/MKL 环境变量可按 runtime 文档设置，但**不要把 `OPENBLAS_NUM_THREADS` 当成全局固定模板**。当前 pinned Qwen native runtime 会根据自己的 `-j/--threads` 调 `openblas_set_num_threads()`；若环境中已存在 `OPENBLAS_NUM_THREADS`，会绕过该内部分配。因此运行 native Qwen 时应保证该变量未预设。
 
-```bash
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev,ui,piper,kokoro]"
-edgetts-arena doctor --ui --exports-root exports/doctor
-```
+## 4. Piper / Kokoro
 
-主 CI 已在 Python 3.10/3.11/3.12 验证；Windows/macOS/Linux 均通过 Doctor、Dummy/API/spawn smoke。
+Piper 与 Kokoro 继续作为主 Arena 轻量真实模型 baseline。Kokoro 支持 capability-gated `language`（当前 en-us/en-gb）。
 
-### 2.2 Extended model 独立环境
+## 5. Qwen3 official FP32
 
-CosyVoice/MeloTTS 虽已通过独立真实 CPU gate，但当前继续 `experimental + disabled`。**不要把官方 CosyVoice/MeloTTS 的完整依赖直接安装进主 UI venv。** CosyVoice pinned requirements 会带入旧版 Gradio/FastAPI/Pydantic，可能覆盖主 Arena 的 UI 依赖。
+模型：`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`；runtime：官方 `qwen-tts==0.1.1` + CPU PyTorch。
 
-在正式 model-worker/venv 隔离完成前，扩展模型应在独立 venv 中执行 `scripts/real_model_smoke.py` 或等价验证。
+首次 hosted gate：2 threads，9.04s audio / 48.05s inference / RTF 5.315 / peak RSS 5317.8MB。
 
-## 3. 通用线程配置
+结论：可工作，但不作为弱设备性能路线。
 
-在加载 Torch/ONNX Runtime 前设置：
+## 6. Qwen3 native quant route
 
-```python
-import os
-
-threads = 4
-os.environ["OMP_NUM_THREADS"] = str(threads)
-os.environ["MKL_NUM_THREADS"] = str(threads)
-os.environ["OPENBLAS_NUM_THREADS"] = str(threads)
-```
-
-PyTorch：
-
-```python
-import torch
-torch.set_num_threads(threads)
-```
-
-ONNX Runtime：
-
-```python
-import onnxruntime as ort
-
-opts = ort.SessionOptions()
-opts.intra_op_num_threads = threads
-opts.inter_op_num_threads = 1
-opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-```
-
-实际 benchmark 仍以 ResourceGuard 生成的 effective thread budget 为准。
-
-## 4. Piper 路线
-
-Piper 是主 Arena 超轻量 baseline：
-
-- Runtime：`piper-tts>=1.4,<2`。
-- `.onnx` 与相邻 `.onnx.json` 必须同时存在。
-- CI 使用官方 `en_US-lessac-low` 真模型完成 CPU synthesis gate。
-- 可用 CLI：
-
-```bash
-python -m piper.download_voices en_US-lessac-low --data-dir models/piper
-edgetts-arena piper --model models/piper/en_US-lessac-low.onnx --text "Piper test" --threads 2 --output exports/piper.wav
-```
-
-## 5. Kokoro 路线
-
-主 Arena 采用 `kokoro-onnx` + ONNX Runtime，优先使用 v1.0 int8：
-
-- `kokoro-v1.0.int8.onnx`
-- `voices-v1.0.bin`
-- CPU provider only
-- Adapter 当前同步 streaming capability 为 false，因此 TTFB 为空，不伪造首包指标
-
-CI 已完成真实 CPU gate。完整资产下载命令见 `12_本地部署与验收指南.md`。
-
-## 6. Qwen3-TTS / 较大模型路线
-
-Qwen3-TTS 0.6B 在本项目中仍属于 **experimental placeholder**：
-
-1. 不批准未经本项目验证的 CPU runtime/量化格式。
-2. 不生成假音频或伪 capability。
-3. 后续比较官方 Python CPU、ncnn/C++ 与其他可复现路线。
-4. 转正式前必须完成固定 revision、资产校验、RAM/RTF、license 与跨平台 gate。
-
-## 7. CosyVoice 300M SFT 已验证路线
-
-当前冻结实现：
-
-- Upstream：QwenAudio/CosyVoice pinned source。
-- 模型：CosyVoice-300M-SFT pinned model revision。
-- CPU runtime：PyTorch CPU + ONNX Runtime CPU。
-- Adapter 模式：SFT speaker，不把 zero-shot prompt audio/text 强塞进现有 voice-id schema。
-- 真实 gate：Ubuntu 24.04 / Python 3.10 / 2 threads。
-- 单次 gate 记录：4.098s 音频、17.875s inference、RTF 4.362、peak RSS 4181 MB；仅用于 gate 追溯。
-
-### 7.1 WeText 离线前端
-
-`wetext==0.0.4` 在没有显式路径时会尝试 `snapshot_download()`。项目侧已禁止依赖该隐式行为：
-
-```bash
-python scripts/prepare_cosyvoice_frontend.py --output models/cosyvoice/wetext
-```
-
-脚本只下载 5 个必需 FST：
+可选 pure-C runtime：`gabriele-mastrapasqua/qwen3-tts`，当前固定 revision：
 
 ```text
-en/tn/tagger.fst
-en/tn/verbalizer.fst
-zh/tn/tagger.fst
-zh/tn/verbalizer.fst
-zh/tn/verbalizer_remove_erhua.fst
+e56ec7e6eabbed608b13bfbd3fba431708b2077f
 ```
 
-并生成 `asset_manifest.json`，记录 SHA-256。运行时通过 `EDGETTS_ARENA_COSYVOICE_WETEXT_DIR` 或默认 `models/cosyvoice/wetext` 注入本地路径。
+Arena Adapter 通过本地 manifest 固定：binary、model_dir、runtime_revision、quantization、default voice、default language。load 时先执行 `--caps` preflight；CI 还执行 `--self-test`。
 
-真实 gate 的 offline preflight 会先把 WeText 的 `snapshot_download()` 替换为“调用即失败”，然后执行 `CosyVoiceTTSAdapter.load_model()`；该步骤已通过，证明 load/inference 前端不依赖隐式 ModelScope 网络访问。
+同文本、同 seed=42 hosted 对照：
 
-## 8. MeloTTS 已验证路线
+| Quant | Threads | Audio | Inference | RTF | Peak RSS |
+|---|---:|---:|---:|---:|---:|
+| INT8 | 2 | 7.52s | 13.44s | **1.787** | 3124MB |
+| INT8 | 4 | 7.52s | 14.92s | 1.984 | 3129MB |
+| INT4 | 4 | 8.48s | 20.62s | 2.432 | **2899MB** |
 
-- 官方 MeloTTS source + pinned Chinese model。
-- PyTorch CPU。
-- 模型资产通过本地 `model.json` 显式指向 config/checkpoint，不允许 Adapter 推理时隐式 HuggingFace 下载。
-- 独立 Ubuntu 24.04 / Python 3.10 / 2 threads real CPU gate 已通过。
-- 历史单次 gate 记录：4.415s 音频、8.005s inference、RTF 1.813、peak RSS 2960.8 MB；仅用于 gate 追溯。
+### 当前选择
 
-## 9. PyTorch CPU 安装
+- 默认 CPU 候选：**INT8 + 2 threads**。
+- INT4：低内存实验项；只节省约 225MB peak，但该 gate 中明显更慢。
+- 相同 seed/text 下 INT4 音频时长发生变化，因此不能仅靠 WAV sanity 推断与 INT8 同质量。
+- 质量判断必须使用 Blind AB / 主观自然度、可懂度、韵律评分。
 
-不要在 requirements 的单个 requirement 行中混写 `--index-url`。推荐由独立安装步骤完成，例如：
+准备示例：
 
 ```bash
-python -m pip install --upgrade pip
-python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python scripts/prepare_qwen3_model.py --output models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
+python scripts/prepare_qwen3_native_manifest.py \
+  --binary runtime/qwen3-tts-c/qwen_tts \
+  --model-dir models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  --runtime-revision e56ec7e6eabbed608b13bfbd3fba431708b2077f \
+  --quantization int8 --default-voice Vivian --default-language Chinese \
+  --output models/qwen3-native/int8/model.json
 ```
 
-实际 Torch 版本与安装方式必须跟随对应模型的 pinned runtime；不要为了统一主 Arena 环境强行升级扩展模型依赖。
+## 7. 子进程资源指标
 
-## 10. 性能测试最小规则
+native C runtime 是 Python Adapter 的子进程。MetricsCollector 会将 Adapter metadata 中的 `subprocess_peak_rss_mb` / `subprocess_avg_cpu_usage_pct` 与 Python worker 指标合并，防止低估 C runtime 的真实 RSS/CPU。
 
-- warm-up 至少 1 次。
-- 正式测量至少 3 次。
-- 线程数固定并记录 requested/effective 值。
-- 同一轮对比使用同一 execution mode。
-- Sequential 与 Concurrent 不混排性能排名。
-- 报告保留 CPU/OS/Python/runtime/model version。
-- 真实设备结果与 GitHub-hosted gate 分开记录，不把 CI 单次 RTF 当成性能承诺。
+## 8. CosyVoice / MeloTTS
+
+两者 hosted real CPU gate 已通过，继续使用独立 Python worker 与本地资产；不要把完整官方依赖强塞进主 UI venv。
+
+## 9. 性能测试规则
+
+- warm-up ≥1，正式测量建议 ≥3。
+- 固定文本/voice/language/seed/线程与 runtime revision。
+- Sequential 与 Concurrent 分开报告。
+- hosted CI 与真实设备结果分开记录。
+- 性能 gate 与音质 gate 分开：RTF/RSS 通过不能代表语音质量通过。

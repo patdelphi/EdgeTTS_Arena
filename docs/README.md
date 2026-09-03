@@ -1,7 +1,7 @@
 # EdgeTTS-Arena 文档
 
-> 文档基线：v0.6（2026-09-03）  
-> 当前状态：**Stage 0~5 已实现；Stage 6 已完成跨平台/ARM64/1-CPU hosted smoke、cgroup-aware CPU/内存预算、非持久模型 watchdog、Piper/Kokoro/MeloTTS/CosyVoice 真实 CPU gate、扩展模型 external Python/venv worker，以及 Qwen3-TTS 0.6B CustomVoice 官方 qwen-tts hosted CPU synthesis gate。主 Arena 已达到本地部署测试条件。Qwen3 下一阶段转向 quantization / low-memory CPU route。**
+> 文档基线：v0.7（2026-09-03）  
+> 当前状态：**Stage 0~5 已实现；Stage 6 已完成主 Arena 跨平台部署基线、扩展模型 worker 隔离、CosyVoice/MeloTTS/Qwen3 官方真实 CPU gate，以及 Qwen3 pure-C native INT8/INT4 hosted 量化 gate。native INT8@2 threads 是当前 CPU 优化候选；真实弱设备与量化音质 A/B 仍待验证。**
 
 开发入口：
 
@@ -19,24 +19,14 @@
 
 当前冻结口径：
 
-- `src/edgetts_arena/`
-- `edgetts-arena serve` / optional `serve --ui`
-- `edgetts-arena doctor` / `doctor --ui` / `doctor --workers` / `doctor --worker MODEL_ID`
-- `GET /api/v1/system/models`
-- `POST /api/v1/benchmark/run`
-- `GET /api/v1/benchmark/presets`
-- `POST /api/v1/benchmark/suite`
-- `run_id` 统一归档
-- Sequential 为标准基准；Concurrent 是压力模式
-- Standard Suite 默认 warm-up 1 + measured 3
-- 原始 measurement + aggregate statistics 同时保存
-- TTFB 仅真流式有效
-- Blind AB 写入 `blind_scores.json`
-- 主 Arena 本地部署范围：Dummy + Piper + Kokoro
-- Qwen3：官方 `qwen-tts` 0.6B CustomVoice CPU Adapter + hosted real CPU gate 已通过；FP32 2-thread baseline RTF 5.315 / peak RSS 5317.8MB；继续默认 `experimental + disabled`，下一步量化/低内存优化
-- MeloTTS 与 CosyVoice 300M SFT real CPU gate 已通过，继续默认 `experimental + disabled`
-- 扩展模型 runtime：通过 `worker_python` / `worker_python_env` 使用专用 external Python worker
-- 默认环境变量：`EDGETTS_ARENA_QWEN3_PYTHON`、`EDGETTS_ARENA_COSYVOICE_PYTHON`、`EDGETTS_ARENA_MELOTTS_PYTHON`
-- `/system/models` 返回 `worker_mode` / `worker_python_configured`，不返回本机解释器绝对路径
-- CosyVoice WeText：安装准备阶段显式下载本地 FST；推理/load 阶段不得隐式下载
-- Qwen3 模型资产：`scripts/prepare_qwen3_model.py` 下载解析后的固定 revision 并生成 `asset_manifest.json`；benchmark 运行阶段只读取本地路径
+- 主 Arena 本地部署范围：Dummy + Piper + Kokoro。
+- `POST /benchmark/run` 与 `/benchmark/suite` 使用同步语义；`run_id` 是归档 ID。
+- Standard Suite：warm-up 1 + measured 3；Sequential 是基准，Concurrent 是压力模式。
+- `config.language` 已进入 benchmark API；CLI 支持 `suite --language`。
+- `language_control` 是模型配置级 capability：Qwen official/Qwen native/Kokoro=true；MeloTTS 当前由 descriptor 固定语言，不接受全局 language override。
+- Gradio 单模型模式提供 capability-aware Language 下拉；多模型时使用各模型默认语言。
+- Qwen official FP32 2-thread hosted baseline：RTF 5.315 / peak RSS 5317.8MB。
+- Qwen native hosted quant baseline：INT8@2 RTF 1.787 / 3124MB；INT8@4 RTF 1.984 / 3129MB；INT4@4 RTF 2.432 / 2899MB。
+- 当前推荐 native INT8@2；INT4 仅低内存实验选项，不宣称质量等价。
+- native runtime 自己管理 OpenBLAS thread split；不要预设 `OPENBLAS_NUM_THREADS`。
+- 全部扩展模型继续默认 `experimental + disabled`，直到对应目标设备验证完成。
