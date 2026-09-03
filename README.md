@@ -147,7 +147,7 @@ Qwen3 当前仍为受控 placeholder：默认 disabled/unavailable，不绑定�
 
 ## 下一阶段
 
-**Stage 6 — Hardening（进行中）**：已加入 Windows/macOS/Linux smoke、Concurrent CPU/内存预算、进程级 watchdog 与 worker 退出诊断。单轮 benchmark 与 Standard Suite 均可在 hard timeout 后终止 worker；显式 `MemoryError` → `2002`，worker crash/timeout → `3002` / `3001`。`SIGKILL` 只标记 `oom_suspected=true`，不在缺少内核证据时伪称确定 OOM。下一步继续第二批模型与弱算力设备验证。
+**Stage 6 — Hardening（进行中）**：Windows/macOS/Linux、原生 ARM64 与 GitHub-hosted 1-CPU smoke 已通过；Concurrent CPU/内存预算、进程级 watchdog 与 worker 退出诊断已落地。ResourceGuard 会综合 process CPU、affinity、Linux cgroup quota 与 host CPU，使用最保守的有效核数；`environment.json` 同时记录 `cpu_effective_cores`。剩余重点是第二批模型真实 CPU gate 与真实 ARM/弱算力设备实机验证。
 
 
 ## Stage 6 Hardening（第一批）
@@ -192,3 +192,11 @@ GitHub CI 增加 Ubuntu / Windows / macOS 三平台 Python 3.11 Dummy WAV + Fast
 CosyVoice/MeloTTS 的真实 CPU 验证不进入每次 push 的主 CI。仓库提供手动 `Extended Model Gates` workflow，可选择 `melotts`、`cosyvoice` 或 `both`。验证统一通过 `scripts/real_model_smoke.py` 输出 WAV 与 JSON metrics artifact。
 
 该 workflow 只是可复现 gate；在实际 GitHub Actions run 成功前，两个模型仍保持 `experimental + disabled`，不标记为 real CPU verified。
+
+
+## Stage 6 ARM / 低资源验证
+
+- GitHub Actions `ubuntu-24.04-arm` 原生 ARM64 Dummy + spawn worker smoke 已通过。
+- `ubuntu-slim` 1-CPU runner 已验证 sequential 自动降为 1 thread，并在 2-model Concurrent 启动前返回 `concurrent_cpu_budget`。
+- Python 3.10–3.12 下 ResourceGuard 除 affinity 外还读取 Linux cgroup v2 `cpu.max` 与 v1 CPU quota，避免容器看到宿主机更多 CPU 后超配。
+- `cpu_effective_cores` 进入 system/environment snapshot，便于 benchmark 复现。

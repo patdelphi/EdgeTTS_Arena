@@ -54,6 +54,8 @@ def test_models_endpoint_reports_environment_and_capabilities(tmp_path) -> None:
     body = response.json()
     assert body["code"] == 200
     assert body["data"]["system_env"]["cpu_logical_cores"] >= 1
+    assert body["data"]["system_env"]["cpu_effective_cores"] >= 1
+    assert body["data"]["system_env"]["cpu_effective_cores"] <= body["data"]["system_env"]["cpu_logical_cores"]
     dummy = next(item for item in body["data"]["models"] if item["id"] == "dummy")
     assert dummy["capabilities"]["streaming"] is True
     assert dummy["default_voice"] == "default"

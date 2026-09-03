@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
@@ -10,14 +11,55 @@ from edgetts_arena.core.config import ResourceGuardSettings
 from edgetts_arena.core.errors import ArenaError
 
 
+def _quota_to_cpu_count(quota: int, period: int) -> int | None:
+    """Convert a cgroup CPU quota into a conservative whole-core budget."""
+    if quota <= 0 or period <= 0:
+        return None
+    return max(1, quota // period)
+
+
+def _cgroup_cpu_quota_count() -> int | None:
+    """Best-effort Linux cgroup v2/v1 CPU quota detection."""
+    try:
+        cpu_max = Path("/sys/fs/cgroup/cpu.max")
+        if cpu_max.is_file():
+            quota_raw, period_raw = cpu_max.read_text(encoding="utf-8").strip().split()[:2]
+            if quota_raw != "max":
+                value = _quota_to_cpu_count(int(quota_raw), int(period_raw))
+                if value is not None:
+                    return value
+    except (OSError, ValueError, IndexError):
+        pass
+
+    v1_candidates = (
+        (Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"), Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")),
+        (Path("/sys/fs/cgroup/cpu.cfs_quota_us"), Path("/sys/fs/cgroup/cpu.cfs_period_us")),
+    )
+    for quota_path, period_path in v1_candidates:
+        try:
+            if not quota_path.is_file() or not period_path.is_file():
+                continue
+            value = _quota_to_cpu_count(
+                int(quota_path.read_text(encoding="utf-8").strip()),
+                int(period_path.read_text(encoding="utf-8").strip()),
+            )
+            if value is not None:
+                return value
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def effective_cpu_count() -> int:
-    """Return CPUs effectively available to this process, not just host CPUs."""
+    """Return the conservative CPU budget effectively available to this process."""
+    candidates: list[int] = []
+
     process_count = getattr(os, "process_cpu_count", None)
     if callable(process_count):
         try:
             value = process_count()
             if value:
-                return max(1, int(value))
+                candidates.append(max(1, int(value)))
         except (OSError, TypeError, ValueError):
             pass
 
@@ -26,11 +68,16 @@ def effective_cpu_count() -> int:
         try:
             value = len(affinity(0))
             if value:
-                return max(1, int(value))
+                candidates.append(max(1, int(value)))
         except (OSError, TypeError, ValueError):
             pass
 
-    return max(1, int(os.cpu_count() or 1))
+    quota_count = _cgroup_cpu_quota_count()
+    if quota_count is not None:
+        candidates.append(quota_count)
+
+    candidates.append(max(1, int(os.cpu_count() or 1)))
+    return max(1, min(candidates))
 
 
 @dataclass(frozen=True, slots=True)

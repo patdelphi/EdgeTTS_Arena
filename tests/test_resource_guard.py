@@ -76,12 +76,23 @@ def test_concurrent_plan_rejects_memory_and_model_budget() -> None:
     assert exc_info.value.error_type == "concurrent_model_limit"
 
 
-def test_effective_cpu_count_prefers_process_budget(monkeypatch) -> None:
+def test_effective_cpu_count_uses_smallest_process_affinity_and_cgroup_budget(monkeypatch) -> None:
     import edgetts_arena.core.resource_guard as module
 
-    monkeypatch.setattr(module.os, "process_cpu_count", lambda: 2, raising=False)
-    monkeypatch.setattr(module.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
+    monkeypatch.setattr(module.os, "process_cpu_count", lambda: 4, raising=False)
+    monkeypatch.setattr(module.os, "sched_getaffinity", lambda pid: set(range(8)), raising=False)
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(module, "_cgroup_cpu_quota_count", lambda: 2)
     assert module.effective_cpu_count() == 2
+
+
+def test_quota_to_cpu_count_is_conservative() -> None:
+    import edgetts_arena.core.resource_guard as module
+
+    assert module._quota_to_cpu_count(100000, 100000) == 1
+    assert module._quota_to_cpu_count(150000, 100000) == 1
+    assert module._quota_to_cpu_count(250000, 100000) == 2
+    assert module._quota_to_cpu_count(-1, 100000) is None
 
 
 def test_single_core_rejects_multi_model_concurrent_budget() -> None:
