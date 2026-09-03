@@ -1,7 +1,7 @@
 # EdgeTTS-Arena 文档
 
 > 文档基线：v0.3（2026-09-03）  
-> 当前状态：**Stage 0~5 已实现；Stage 6 已完成跨平台/ARM64/1-CPU hosted smoke、cgroup-aware CPU/内存并发预算、非持久模型 watchdog 与 worker 退出/OOM 诊断；第二批真实 CPU gate 与真实弱算力设备继续验证**
+> 当前状态：**Stage 0~5 已实现；Stage 6 已完成跨平台/ARM64/1-CPU hosted smoke、cgroup-aware CPU/内存并发预算、非持久模型 watchdog 与 worker 退出/OOM 诊断；MeloTTS 已通过可复现真实 CPU synthesis gate，CosyVoice 与真实弱算力设备继续验证**
 
 开发入口：
 
@@ -28,3 +28,4 @@
 - TTFB 仅真流式有效
 - Blind AB 写入 `blind_scores.json`
 - MVP：Dummy + Piper + Kokoro；Qwen3 experimental placeholder
+- Batch 2：MeloTTS Adapter 已通过 GitHub-hosted x86_64 real CPU gate但继续保持 experimental/disabled；CosyVoice SFT real CPU gate 待验证
