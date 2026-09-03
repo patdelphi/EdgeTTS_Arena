@@ -7,7 +7,6 @@ from typing import Callable
 
 import yaml
 
-from edgetts_arena.adapters.dummy_adapter import DummyTTSAdapter
 from edgetts_arena.core.base_adapter import BaseTTSAdapter
 from edgetts_arena.core.errors import ArenaError
 
@@ -44,6 +43,14 @@ class ModelRecord:
 AdapterFactory = Callable[[], BaseTTSAdapter]
 
 
+def _default_adapter_factories() -> dict[str, AdapterFactory]:
+    # Import adapters only when the registry is instantiated. Importing them at
+    # module load time creates a cycle through edgetts_arena.core.__init__.
+    from edgetts_arena.adapters.dummy_adapter import DummyTTSAdapter
+
+    return {"dummy": DummyTTSAdapter}
+
+
 class ModelRegistry:
     """Configuration-backed adapter registry with explicit lifecycle state."""
 
@@ -52,7 +59,7 @@ class ModelRegistry:
         specs: list[ModelSpec],
         adapter_factories: dict[str, AdapterFactory] | None = None,
     ) -> None:
-        self._factories: dict[str, AdapterFactory] = {"dummy": DummyTTSAdapter}
+        self._factories: dict[str, AdapterFactory] = _default_adapter_factories()
         if adapter_factories:
             self._factories.update(adapter_factories)
         self._records: dict[str, ModelRecord] = {}
