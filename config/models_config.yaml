@@ -27,13 +27,15 @@ models:
     experimental: false
 
   - id: qwen3-tts-0.6b
-    name: Qwen3-TTS 0.6B
+    name: Qwen3-TTS 0.6B CustomVoice
     enabled: false
     adapter: qwen3
-    model_path: ./models/qwen3-tts-0.6b
+    model_path: ./models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
     keep_in_memory: false
     num_threads: 4
     experimental: true
+    worker_python: ""
+    worker_python_env: EDGETTS_ARENA_QWEN3_PYTHON
 
   - id: cosyvoice-300m-sft
     name: CosyVoice 300M SFT
