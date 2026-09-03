@@ -33,6 +33,9 @@ edgetts-arena = "edgetts_arena.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"edgetts_arena.defaults" = ["*.yaml", "*.json"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 pythonpath = ["src"]

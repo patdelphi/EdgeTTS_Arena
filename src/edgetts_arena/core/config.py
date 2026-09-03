@@ -7,6 +7,10 @@ from typing import Any
 
 import yaml
 
+from edgetts_arena.defaults import read_default_text
+
+_DEFAULT_APP_CONFIG = Path("config/app_config.yaml")
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceGuardSettings:
@@ -27,15 +31,19 @@ class AppSettings:
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+    elif path == _DEFAULT_APP_CONFIG:
+        text = read_default_text("app_config.yaml")
+    else:
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(text) or {}
     if not isinstance(data, dict):
         raise ValueError("application config root must be a mapping")
     return data
 
 
-def load_settings(path: str | Path = "config/app_config.yaml") -> AppSettings:
+def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
     raw = _read_yaml(Path(path))
     guard_raw = raw.get("resource_guard", {}) or {}
     guard = ResourceGuardSettings(

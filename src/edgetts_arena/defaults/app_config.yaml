@@ -1,0 +1,10 @@
+host: 127.0.0.1
+port: 8000
+log_level: INFO
+default_num_threads: 4
+inference_timeout_sec: 60
+resource_guard:
+  min_available_memory_mb_soft: 1536
+  min_available_memory_mb_hard: 768
+  min_available_memory_mb_per_concurrent_model: 512
+  max_concurrent_models: 4

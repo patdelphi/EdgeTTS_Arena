@@ -18,8 +18,10 @@ from edgetts_arena.core.process_runner import ProcessRunner, ProcessTimeoutError
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.system_info import collect_system_environment
 from edgetts_arena.core.worker_runtime import run_isolated_repeated_model
+from edgetts_arena.defaults import read_default_text
 from edgetts_arena.utils import write_wav
 
+_DEFAULT_BENCHMARK_PRESETS = Path("config/benchmark_presets.json")
 _METRICS = (
     "inference_time_ms", "audio_duration_ms", "rtf", "ttfb_ms",
     "peak_rss_mb", "rss_delta_mb", "avg_cpu_usage_pct",
@@ -47,8 +49,15 @@ class BenchmarkPresetSuite:
     cases: tuple[BenchmarkCase, ...]
 
     @classmethod
-    def load(cls, path: str | Path = "config/benchmark_presets.json") -> "BenchmarkPresetSuite":
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    def load(cls, path: str | Path = _DEFAULT_BENCHMARK_PRESETS) -> "BenchmarkPresetSuite":
+        preset_path = Path(path)
+        if preset_path.exists():
+            text = preset_path.read_text(encoding="utf-8")
+        elif preset_path == _DEFAULT_BENCHMARK_PRESETS:
+            text = read_default_text("benchmark_presets.json")
+        else:
+            raise FileNotFoundError(preset_path)
+        raw = json.loads(text)
         defaults = raw.get("defaults") or {}
         cases = tuple(
             BenchmarkCase(
@@ -189,9 +198,7 @@ class RepeatedBenchmarkService:
                 try:
                     if record.spec.worker_python:
                         warnings.append(f"{model_id}: using dedicated external Python worker")
-                        result = self.process_runner.run_external_worker(
-                            record.spec.worker_python, "repeated", task, timeout_sec=timeout
-                        )
+                        result = self.process_runner.run_external_worker(record.spec.worker_python, "repeated", task, timeout_sec=timeout)
                     else:
                         result = self.process_runner.run(run_isolated_repeated_model, task, timeout_sec=timeout)
                 except ProcessTimeoutError as exc:
@@ -214,8 +221,7 @@ class RepeatedBenchmarkService:
                     return self._error(
                         case, model_id, warmup_runs, measured_runs, warnings,
                         payload.get("error") or {"code": 3002, "type": "worker_error", "message": "isolated suite worker failed"},
-                        metadata=payload.get("metadata"),
-                        worker=result.diagnostics(),
+                        metadata=payload.get("metadata"), worker=result.diagnostics(),
                     )
                 metadata = payload.get("metadata")
                 audio_url = f"/api/v1/audio/download/{run_id}/{filename}" if payload.get("audio_written") else None

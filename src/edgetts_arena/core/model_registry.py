@@ -10,6 +10,9 @@ import yaml
 
 from edgetts_arena.core.base_adapter import BaseTTSAdapter
 from edgetts_arena.core.errors import ArenaError
+from edgetts_arena.defaults import read_default_text
+
+_DEFAULT_MODELS_CONFIG = Path("config/models_config.yaml")
 
 
 class ModelStatus(str, Enum):
@@ -56,8 +59,6 @@ AdapterFactory = Callable[[], BaseTTSAdapter]
 
 
 def _default_adapter_factories() -> dict[str, AdapterFactory]:
-    # Import adapters only when the registry is instantiated. Importing them at
-    # module load time creates a cycle through edgetts_arena.core.__init__.
     from edgetts_arena.adapters.dummy_adapter import DummyTTSAdapter
     from edgetts_arena.adapters.kokoro_adapter import KokoroTTSAdapter
     from edgetts_arena.adapters.piper_adapter import PiperTTSAdapter
@@ -97,10 +98,17 @@ class ModelRegistry:
     @classmethod
     def from_yaml(
         cls,
-        path: str | Path = "config/models_config.yaml",
+        path: str | Path = _DEFAULT_MODELS_CONFIG,
         adapter_factories: dict[str, AdapterFactory] | None = None,
     ) -> "ModelRegistry":
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        config_path = Path(path)
+        if config_path.exists():
+            text = config_path.read_text(encoding="utf-8")
+        elif config_path == _DEFAULT_MODELS_CONFIG:
+            text = read_default_text("models_config.yaml")
+        else:
+            raise FileNotFoundError(config_path)
+        raw = yaml.safe_load(text) or {}
         models = raw.get("models", [])
         if not isinstance(models, list):
             raise ValueError("models_config.yaml: 'models' must be a list")
@@ -159,22 +167,14 @@ class ModelRegistry:
     ) -> BaseTTSAdapter:
         record = self.get_record(model_id)
         if record.status == ModelStatus.UNAVAILABLE:
-            raise ArenaError(
-                1002,
-                f"model '{model_id}' is unavailable",
-                error_type="model_unavailable",
-            )
+            raise ArenaError(1002, f"model '{model_id}' is unavailable", error_type="model_unavailable")
         if record.adapter is not None and record.status in {ModelStatus.READY, ModelStatus.BUSY}:
             return record.adapter
 
         factory = self._factories.get(record.spec.adapter)
         if factory is None:
             record.status = ModelStatus.UNAVAILABLE
-            raise ArenaError(
-                1002,
-                f"adapter '{record.spec.adapter}' is unavailable",
-                error_type="adapter_unavailable",
-            )
+            raise ArenaError(1002, f"adapter '{record.spec.adapter}' is unavailable", error_type="adapter_unavailable")
 
         threads = record.spec.num_threads if num_threads is None else int(num_threads)
         if threads < 1:
@@ -184,11 +184,7 @@ class ModelRegistry:
         record.error = None
         try:
             adapter = factory()
-            adapter.load_model(
-                record.spec.model_path,
-                device="cpu",
-                num_threads=threads,
-            )
+            adapter.load_model(record.spec.model_path, device="cpu", num_threads=threads)
         except Exception as exc:
             record.status = ModelStatus.ERROR
             record.error = str(exc)
