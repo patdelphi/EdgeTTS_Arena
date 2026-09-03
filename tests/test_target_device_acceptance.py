@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.target_device_acceptance import run_acceptance
 
 
@@ -22,6 +24,7 @@ def _args(tmp_path: Path, **overrides):
         "max_rtf": 2.0,
         "max_peak_rss_mb": 3500.0,
         "no_zip": False,
+        "overwrite": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -39,7 +42,7 @@ def _environment(*, cpu_threads_per_model: int):
     }
 
 
-def test_target_device_acceptance_passes_and_builds_archive(tmp_path: Path) -> None:
+def _gate_factory():
     counter = {"value": 0}
 
     def gate(args):
@@ -56,8 +59,12 @@ def test_target_device_acceptance_passes_and_builds_archive(tmp_path: Path) -> N
         Path(args.report).write_text(json.dumps(report), encoding="utf-8")
         return report
 
+    return gate
+
+
+def test_target_device_acceptance_passes_and_builds_archive(tmp_path: Path) -> None:
     report = run_acceptance(
-        _args(tmp_path), gate_runner=gate, environment_collector=_environment
+        _args(tmp_path), gate_runner=_gate_factory(), environment_collector=_environment
     )
     assert report["passed"] is True
     assert report["aggregate"]["rtf"]["max"] == 1.8
@@ -87,3 +94,27 @@ def test_target_device_acceptance_fails_worst_case_and_bad_openblas(tmp_path: Pa
     assert report["passed"] is False
     failed = {item["name"] for item in report["checks"] if not item["ok"]}
     assert {"native_openblas_unset", "max_rtf", "max_peak_rss_mb"} <= failed
+
+
+def test_target_device_acceptance_rejects_stale_output_by_default(tmp_path: Path) -> None:
+    args = _args(tmp_path, runs=1)
+    run_acceptance(args, gate_runner=_gate_factory(), environment_collector=_environment)
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        run_acceptance(args, gate_runner=_gate_factory(), environment_collector=_environment)
+
+
+def test_target_device_acceptance_overwrite_cleans_stale_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "acceptance"
+    root.mkdir(parents=True)
+    stale = root / "stale.txt"
+    stale.write_text("old evidence", encoding="utf-8")
+    root.with_suffix(".zip").write_bytes(b"old archive")
+
+    report = run_acceptance(
+        _args(tmp_path, runs=1, overwrite=True),
+        gate_runner=_gate_factory(),
+        environment_collector=_environment,
+    )
+    assert report["passed"] is True
+    assert not stale.exists()
+    assert Path(report["archive"]).is_file()
