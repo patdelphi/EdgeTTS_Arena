@@ -5,7 +5,7 @@ import math
 import statistics
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 
@@ -132,6 +132,25 @@ class RepeatedBenchmarkService:
         cpu_threads_per_model: int = 4, warmup_runs: int | None = None,
         measured_runs: int | None = None, config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Blocking wrapper that returns the final snapshot of :meth:`run_suite_stream`."""
+        data: dict[str, Any] = {}
+        for data, _complete in self.run_suite_stream(
+            model_ids=model_ids, case_ids=case_ids, cpu_threads_per_model=cpu_threads_per_model,
+            warmup_runs=warmup_runs, measured_runs=measured_runs, config=config,
+        ):
+            pass
+        return data
+
+    def run_suite_stream(
+        self, *, model_ids: list[str], case_ids: list[str] | None = None,
+        cpu_threads_per_model: int = 4, warmup_runs: int | None = None,
+        measured_runs: int | None = None, config: dict[str, Any] | None = None,
+    ) -> Iterator[tuple[dict[str, Any], bool]]:
+        """Yield ``(data_snapshot, complete)`` after each case×model pair finishes.
+
+        The final item (``complete=True``) is written to benchmark_report.json /
+        environment.json and is exactly what :meth:`run_suite` returns.
+        """
         if not model_ids or len(model_ids) > 4 or len(set(model_ids)) != len(model_ids):
             raise ArenaError(1001, "suite models must contain 1 to 4 unique model ids", error_type="validation_error")
         self.resource_guard.assess(execution_mode="sequential")
@@ -145,16 +164,23 @@ class RepeatedBenchmarkService:
         config = dict(config or {})
         run_id, started = new_run_id(), utc_now()
         self.artifact_store.create_run(run_id)
-        results = [
-            self._run_case_model(run_id, case, model_id, threads, warmups, repeats, config)
-            for case in cases for model_id in model_ids
-        ]
-        data = {
-            "run_id": run_id, "started_at": iso_utc(started), "completed_at": iso_utc(utc_now()),
-            "suite_version": self.preset_suite.version, "execution_mode": "sequential",
-            "cpu_threads_per_model": threads, "warmup_runs": warmups, "measured_runs": repeats,
-            "cases": [case.to_dict() for case in cases], "models": list(model_ids), "results": results,
-        }
+
+        def snapshot(results: list[dict[str, Any]], complete: bool) -> dict[str, Any]:
+            return {
+                "run_id": run_id, "started_at": iso_utc(started),
+                "completed_at": iso_utc(utc_now()) if complete else None,
+                "suite_version": self.preset_suite.version, "execution_mode": "sequential",
+                "cpu_threads_per_model": threads, "warmup_runs": warmups, "measured_runs": repeats,
+                "cases": [case.to_dict() for case in cases], "models": list(model_ids), "results": results,
+            }
+
+        results: list[dict[str, Any]] = []
+        for case in cases:
+            for model_id in model_ids:
+                results.append(self._run_case_model(run_id, case, model_id, threads, warmups, repeats, config))
+                yield snapshot(list(results), False), False
+
+        data = snapshot(results, True)
         report = {
             "schema_version": "benchmark-suite-report-v1",
             "request": {"case_ids": [c.id for c in cases], "models": list(model_ids), "cpu_threads_per_model": threads,
@@ -163,7 +189,7 @@ class RepeatedBenchmarkService:
         }
         self.artifact_store.write_json(run_id, "environment.json", collect_system_environment(cpu_threads_per_model=threads))
         self.artifact_store.write_json(run_id, "benchmark_report.json", report)
-        return data
+        yield data, True
 
     def _run_case_model(
         self, run_id: str, case: BenchmarkCase, model_id: str, num_threads: int,

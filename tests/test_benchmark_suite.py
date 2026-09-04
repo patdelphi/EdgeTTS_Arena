@@ -95,6 +95,24 @@ def test_aggregate_preserves_null_ttfb_for_non_streaming_measurements() -> None:
     assert aggregate["ttfb_ms"]["mean"] is None
 
 
+def test_run_suite_stream_yields_incremental_snapshots(tmp_path) -> None:
+    service = make_service(tmp_path)
+    snapshots = list(
+        service.run_suite_stream(
+            model_ids=["dummy"], case_ids=["TC-01", "TC-02"], warmup_runs=0, measured_runs=1
+        )
+    )
+    # One in-progress snapshot per case×model pair, then a single final one.
+    assert [complete for _data, complete in snapshots] == [False, False, True]
+    assert len(snapshots[0][0]["results"]) == 1
+    assert len(snapshots[1][0]["results"]) == 2
+    assert snapshots[0][0]["completed_at"] is None
+    final = snapshots[-1][0]
+    assert final["completed_at"] is not None
+    assert len(final["results"]) == 2
+    assert [r["case_id"] for r in final["results"]] == ["TC-01", "TC-02"]
+
+
 def test_repeated_suite_warmup_measurements_report_and_zip(tmp_path) -> None:
     service = make_service(tmp_path)
     data = service.run_suite(

@@ -130,6 +130,27 @@ def _guard() -> ResourceGuard:
     )
 
 
+def test_run_stream_yields_incremental_snapshots(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        [
+            ModelSpec(id="d1", name="D1", adapter="dummy", enabled=True, keep_in_memory=True, num_threads=1),
+            ModelSpec(id="d2", name="D2", adapter="dummy", enabled=True, keep_in_memory=True, num_threads=1),
+        ],
+        adapter_factories={"dummy": DummyTTSAdapter},
+    )
+    service = BenchmarkService(registry, _guard(), RunArtifactStore(tmp_path / "exports"))
+    snapshots = list(service.run_stream(text="hi", model_ids=["d1", "d2"]))
+    # One in-progress snapshot per model, then a single final one.
+    assert [complete for _data, complete in snapshots] == [False, False, True]
+    assert len(snapshots[0][0]["results"]) == 1
+    assert len(snapshots[1][0]["results"]) == 2
+    # In-progress snapshots are not timestamped complete; the final one is.
+    assert snapshots[0][0]["completed_at"] is None
+    final = snapshots[-1][0]
+    assert final["completed_at"] is not None
+    assert [r["model_id"] for r in final["results"]] == ["d1", "d2"]
+
+
 def test_single_model_hard_timeout_maps_to_3001_and_recovers_status(tmp_path: Path) -> None:
     registry = _registry()
     service = BenchmarkService(

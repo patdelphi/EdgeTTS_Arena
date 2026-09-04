@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from edgetts_arena.core.artifacts import RunArtifactStore
@@ -63,6 +63,35 @@ class BenchmarkService:
         cpu_threads_per_model: int = 4,
         config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Blocking wrapper that returns the final snapshot of :meth:`run_stream`."""
+        data: dict[str, Any] = {}
+        for data, _complete in self.run_stream(
+            text=text,
+            model_ids=model_ids,
+            execution_mode=execution_mode,
+            cpu_threads_per_model=cpu_threads_per_model,
+            config=config,
+        ):
+            pass
+        return data
+
+    def run_stream(
+        self,
+        *,
+        text: str,
+        model_ids: list[str],
+        execution_mode: str = "sequential",
+        cpu_threads_per_model: int = 4,
+        config: dict[str, Any] | None = None,
+    ) -> Iterator[tuple[dict[str, Any], bool]]:
+        """Yield ``(data_snapshot, complete)`` after each model finishes.
+
+        Lets the UI render results incrementally instead of waiting for the whole
+        run. ``results`` stays index-aligned to ``model_ids`` (sequential finishes
+        in order; concurrent fills slots as futures complete). The final item
+        (``complete=True``) is written to benchmark_report.json / environment.json
+        and is exactly what :meth:`run` returns.
+        """
         if execution_mode not in {"sequential", "concurrent"}:
             raise ArenaError(1001, "invalid execution_mode", error_type="validation_error")
 
@@ -79,9 +108,23 @@ class BenchmarkService:
         environment["execution_plan"] = plan.to_dict()
         self.artifact_store.create_run(run_id)
 
+        def snapshot(results: list[dict[str, Any]], complete: bool) -> dict[str, Any]:
+            return {
+                "run_id": run_id,
+                "started_at": iso_utc(started_at),
+                "completed_at": iso_utc(utc_now()) if complete else None,
+                "execution_mode": execution_mode,
+                "execution_profile": plan.profile,
+                "requested_cpu_threads_per_model": cpu_threads_per_model,
+                "cpu_threads_per_model": threads,
+                "total_threads_budget": plan.total_threads_budget,
+                "resource_warnings": list(plan.warnings),
+                "results": results,
+            }
+
+        aligned: list[dict[str, Any] | None] = [None] * len(model_ids)
         if execution_mode == "sequential":
-            results = []
-            for model_id in model_ids:
+            for index, model_id in enumerate(model_ids):
                 model_started_at = utc_now()
                 result = self._run_model(
                     run_id=run_id,
@@ -92,13 +135,12 @@ class BenchmarkService:
                 )
                 model_completed_at = utc_now()
                 # 计算模型运行时长（秒）
-                model_duration_sec = (model_completed_at - model_started_at).total_seconds()
-                result["model_duration_sec"] = model_duration_sec
+                result["model_duration_sec"] = (model_completed_at - model_started_at).total_seconds()
                 result["model_started_at"] = iso_utc(model_started_at)
                 result["model_completed_at"] = iso_utc(model_completed_at)
-                results.append(result)
+                aligned[index] = result
+                yield snapshot([item for item in aligned if item is not None], False), False
         else:
-            indexed: dict[int, dict[str, Any]] = {}
             with ThreadPoolExecutor(max_workers=len(model_ids), thread_name_prefix="arena-model") as pool:
                 futures = {
                     pool.submit(
@@ -112,22 +154,10 @@ class BenchmarkService:
                     for index, model_id in enumerate(model_ids)
                 }
                 for future in as_completed(futures):
-                    indexed[futures[future]] = future.result()
-            results = [indexed[index] for index in range(len(model_ids))]
+                    aligned[futures[future]] = future.result()
+                    yield snapshot([item for item in aligned if item is not None], False), False
 
-        completed_at = utc_now()
-        data = {
-            "run_id": run_id,
-            "started_at": iso_utc(started_at),
-            "completed_at": iso_utc(completed_at),
-            "execution_mode": execution_mode,
-            "execution_profile": plan.profile,
-            "requested_cpu_threads_per_model": cpu_threads_per_model,
-            "cpu_threads_per_model": threads,
-            "total_threads_budget": plan.total_threads_budget,
-            "resource_warnings": list(plan.warnings),
-            "results": results,
-        }
+        data = snapshot([item for item in aligned if item is not None], True)
         self.artifact_store.write_json(run_id, "environment.json", environment)
         self.artifact_store.write_json(
             run_id,
@@ -147,7 +177,7 @@ class BenchmarkService:
                 "data": data,
             },
         )
-        return data
+        yield data, True
 
     def _run_model(
         self,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import gradio as gr
 from fastapi.responses import RedirectResponse
@@ -276,11 +276,15 @@ def build_arena_ui(
             input_text: str, ids: list[str] | None, execution: str, thread_count: int | float,
             speed_value: float, seed_value: int | float | None, voice_value: str | None,
             language_value: str | None, current: list[dict[str, Any]],
-        ) -> tuple[Any, ...]:
+        ) -> Iterator[tuple[Any, ...]]:
             selected = list(ids or [])
             if not selected:
                 raise gr.Error("请至少选择一个模型。")
-            data = benchmark_service.run(
+            names = {str(x["id"]): str(x.get("name") or x["id"]) for x in (current or registry.list_models())}
+            slot_target = min(len(selected), 4)
+            # Stream: re-render after every model finishes so results appear one by
+            # one instead of all at once when the whole run completes.
+            for data, complete in benchmark_service.run_stream(
                 text=input_text, model_ids=selected, execution_mode=execution,
                 cpu_threads_per_model=int(thread_count),
                 config={
@@ -290,48 +294,68 @@ def build_arena_ui(
                     "language": language_value or None,
                     "sample_rate": None,
                 },
-            )
-            names = {str(x["id"]): str(x.get("name") or x["id"]) for x in (current or registry.list_models())}
-            audio_values, card_values = [], []
-            for result in data["results"][:4]:
-                audio_values.append(_result_audio_path(result, data["run_id"], artifact_store))
-                card_values.append(format_result_card(result, names))
-            audio_values += [None] * (4 - len(audio_values))
-            card_values += ["_暂无结果_"] * (4 - len(card_values))
-            success = sum(r.get("status") == "success" for r in data["results"])
-            zip_path = artifact_store.build_export(data["run_id"])
-            summary = (
-                f"### 运行 `{data['run_id']}`\n模式: **{data['execution_mode']}** · "
-                f"每模型线程: **{data['cpu_threads_per_model']}** · 成功: **{success}/{len(data['results'])}**"
-            )
-            return (
-                data, summary, str(zip_path), *audio_values, *card_values,
-                comparison_rows(data["results"], names), gr.update(interactive=success >= 2),
-                None, "_盲测会话未开始。_", "", gr.update(interactive=False),
-            )
+            ):
+                done = data["results"]
+                audio_values: list[Any] = []
+                card_values: list[str] = []
+                for result in done[:4]:
+                    audio_values.append(_result_audio_path(result, data["run_id"], artifact_store))
+                    card_values.append(format_result_card(result, names))
+                while len(audio_values) < 4:
+                    audio_values.append(None)
+                    card_values.append("_⏳ 正在合成…_" if len(card_values) < slot_target else "_暂无结果_")
+                success = sum(r.get("status") == "success" for r in done)
+                if complete:
+                    zip_path = str(artifact_store.build_export(data["run_id"]))
+                    summary = (
+                        f"### 运行 `{data['run_id']}`\n模式: **{data['execution_mode']}** · "
+                        f"每模型线程: **{data['cpu_threads_per_model']}** · 成功: **{success}/{len(done)}**"
+                    )
+                else:
+                    zip_path = None
+                    summary = (
+                        f"### 运行 `{data['run_id']}`（进行中）\n模式: **{data['execution_mode']}** · "
+                        f"已完成: **{len(done)}/{len(selected)}**"
+                    )
+                yield (
+                    data, summary, zip_path, *audio_values, *card_values,
+                    comparison_rows(done, names), gr.update(interactive=complete and success >= 2),
+                    None, "_盲测会话未开始。_", "", gr.update(interactive=False),
+                )
 
         def run_suite(
             case_ids: list[str] | None, ids: list[str] | None, warm: int | float,
             measured: int | float, thread_count: int | float, current: list[dict[str, Any]],
-        ) -> tuple[str, list[list[Any]], str]:
+        ) -> Iterator[tuple[str, list[list[Any]], Any]]:
             if not case_ids or not ids:
                 raise gr.Error("请至少选择一个测试用例和一个模型。")
-            data = suite_service.run_suite(
+            names = {str(x["id"]): str(x.get("name") or x["id"]) for x in (current or registry.list_models())}
+            # Stream: refresh the summary/table after each case×model pair so the
+            # suite shows progress instead of appearing only at the very end.
+            for data, complete in suite_service.run_suite_stream(
                 model_ids=list(ids), case_ids=list(case_ids), warmup_runs=int(warm),
                 measured_runs=int(measured), cpu_threads_per_model=int(thread_count),
                 config={
                     "speed": 1.0, "voice": None, "language": None,
                     "seed": None, "sample_rate": None,
                 },
-            )
-            names = {str(x["id"]): str(x.get("name") or x["id"]) for x in (current or registry.list_models())}
-            success = sum(r.get("status") == "success" for r in data["results"])
-            summary = (
-                f"### 测试套件 `{data['run_id']}`\n用例: **{len(data['cases'])}** · 模型: **{len(data['models'])}** · "
-                f"预热: **{data['warmup_runs']}** · 测量: **{data['measured_runs']}** · "
-                f"成功配对: **{success}/{len(data['results'])}**"
-            )
-            return summary, suite_result_rows(data["results"], names), str(artifact_store.build_export(data["run_id"]))
+            ):
+                done = data["results"]
+                total = len(data["cases"]) * len(data["models"])
+                if complete:
+                    success = sum(r.get("status") == "success" for r in done)
+                    summary = (
+                        f"### 测试套件 `{data['run_id']}`\n用例: **{len(data['cases'])}** · 模型: **{len(data['models'])}** · "
+                        f"预热: **{data['warmup_runs']}** · 测量: **{data['measured_runs']}** · "
+                        f"成功配对: **{success}/{len(done)}**"
+                    )
+                    yield summary, suite_result_rows(done, names), str(artifact_store.build_export(data["run_id"]))
+                else:
+                    summary = (
+                        f"### 测试套件 `{data['run_id']}`（进行中）\n"
+                        f"已完成: **{len(done)}/{total}** 个 用例×模型 配对"
+                    )
+                    yield summary, suite_result_rows(done, names), None
 
         def begin_blind(data: dict[str, Any] | None) -> tuple[Any, ...]:
             if not data:
