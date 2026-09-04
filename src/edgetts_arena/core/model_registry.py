@@ -101,10 +101,18 @@ class ModelSpec:
     worker_python: str = ""
     worker_python_env: str = ""
     language_control: bool = False
-    # Optional per-model hard inference timeout (seconds). When None, the global
-    # BenchmarkService.inference_timeout_sec applies. Slow autoregressive models
-    # (e.g. Qwen3-TTS on CPU) override this so long-text cases are not cut off.
+    # Optional per-model hard inference timeout ceiling (seconds). When None, the
+    # global BenchmarkService.inference_timeout_sec applies. Slow autoregressive
+    # models (e.g. Qwen3-TTS on CPU) raise this so long-text cases are not cut off;
+    # it also caps the text-scaled budget below when timeout_per_char_sec is set.
     inference_timeout_sec: float | None = None
+    # Optional text-scaled timeout. When timeout_per_char_sec is set the budget
+    # becomes clamp(base + per_char * len(text), base, inference_timeout_sec): short
+    # text fails fast on a real hang while long text is not spuriously cut off.
+    # timeout_base_sec covers model load + fixed overhead and defaults to the global
+    # timeout when omitted.
+    timeout_base_sec: float | None = None
+    timeout_per_char_sec: float | None = None
 
     def resolve_worker_python(self) -> str:
         configured = self.worker_python.strip()
@@ -203,6 +211,20 @@ class ModelRegistry:
                     f"models_config.yaml: model '{item.get('id')}' inference_timeout_sec must be > 0"
                 )
 
+            raw_base = item.get("timeout_base_sec")
+            timeout_base_sec = None if raw_base is None else float(raw_base)
+            if timeout_base_sec is not None and timeout_base_sec < 0:
+                raise ValueError(
+                    f"models_config.yaml: model '{item.get('id')}' timeout_base_sec must be >= 0"
+                )
+
+            raw_per_char = item.get("timeout_per_char_sec")
+            timeout_per_char_sec = None if raw_per_char is None else float(raw_per_char)
+            if timeout_per_char_sec is not None and timeout_per_char_sec <= 0:
+                raise ValueError(
+                    f"models_config.yaml: model '{item.get('id')}' timeout_per_char_sec must be > 0"
+                )
+
             model_path = str(item.get("model_path", ""))
             resolved_path = resolve_model_path(
                 model_path, 
@@ -225,6 +247,8 @@ class ModelRegistry:
                     worker_python_env=worker_python_env,
                     language_control=bool(item.get("language_control", False)),
                     inference_timeout_sec=inference_timeout_sec,
+                    timeout_base_sec=timeout_base_sec,
+                    timeout_per_char_sec=timeout_per_char_sec,
                 )
             )
         return cls(specs, adapter_factories=adapter_factories, search_paths=effective_search_paths)

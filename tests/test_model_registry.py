@@ -62,6 +62,13 @@ def test_registry_applies_per_model_inference_timeout() -> None:
     assert registry.get_record("cosyvoice-300m-sft").spec.inference_timeout_sec == 900.0
     assert registry.get_record("dummy").spec.inference_timeout_sec is None
     assert registry.get_record("piper").spec.inference_timeout_sec is None
+    # The two slow models also scale the budget with text length (base + per-char),
+    # capped by the ceiling above; fast models leave both unset.
+    qwen3 = registry.get_record("qwen3-tts-0.6b").spec
+    assert (qwen3.timeout_base_sec, qwen3.timeout_per_char_sec) == (120.0, 3.0)
+    cosy = registry.get_record("cosyvoice-300m-sft").spec
+    assert (cosy.timeout_base_sec, cosy.timeout_per_char_sec) == (90.0, 1.5)
+    assert registry.get_record("piper").spec.timeout_per_char_sec is None
 
 
 def test_registry_parses_and_validates_inference_timeout(tmp_path: Path) -> None:
@@ -92,6 +99,44 @@ def test_registry_parses_and_validates_inference_timeout(tmp_path: Path) -> None
     )
     with pytest.raises(ValueError, match="inference_timeout_sec must be > 0"):
         ModelRegistry.from_yaml(bad)
+
+
+def test_registry_parses_and_validates_text_scaled_timeout(tmp_path: Path) -> None:
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "models:\n"
+        "  - id: scaled-dummy\n"
+        "    adapter: dummy\n"
+        "    enabled: true\n"
+        "    inference_timeout_sec: 1800\n"
+        "    timeout_base_sec: 120\n"
+        "    timeout_per_char_sec: 3.0\n"
+        "  - id: plain-dummy\n"
+        "    adapter: dummy\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+    registry = ModelRegistry.from_yaml(config)
+    spec = registry.get_record("scaled-dummy").spec
+    assert (spec.timeout_base_sec, spec.timeout_per_char_sec) == (120.0, 3.0)
+    plain = registry.get_record("plain-dummy").spec
+    assert plain.timeout_base_sec is None and plain.timeout_per_char_sec is None
+
+    for field, value, message in (
+        ("timeout_base_sec", -1, "timeout_base_sec must be >= 0"),
+        ("timeout_per_char_sec", 0, "timeout_per_char_sec must be > 0"),
+    ):
+        bad = tmp_path / f"bad_{field}.yaml"
+        bad.write_text(
+            "models:\n"
+            "  - id: bad-dummy\n"
+            "    adapter: dummy\n"
+            "    enabled: true\n"
+            f"    {field}: {value}\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=message):
+            ModelRegistry.from_yaml(bad)
 
 
 def test_registry_reads_dedicated_worker_python(tmp_path: Path) -> None:

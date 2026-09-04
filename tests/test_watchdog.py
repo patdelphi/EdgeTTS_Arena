@@ -151,6 +151,55 @@ def test_run_stream_yields_incremental_snapshots(tmp_path: Path) -> None:
     assert [r["model_id"] for r in final["results"]] == ["d1", "d2"]
 
 
+def test_resolve_timeout_scales_with_text_length_and_clamps() -> None:
+    resolve = BenchmarkService._resolve_timeout_sec
+    # Static model (no per-char): the per-model override wins, else the global default.
+    static = ModelSpec(id="s", name="S", adapter="dummy", inference_timeout_sec=900.0)
+    assert resolve(static, "x" * 10, 180.0) == 900.0
+    assert resolve(ModelSpec(id="p", name="P", adapter="dummy"), "x" * 10, 180.0) == 180.0
+
+    # Text-scaled: clamp(base + per_char * len(text), base, ceiling).
+    scaled = ModelSpec(
+        id="q", name="Q", adapter="dummy",
+        inference_timeout_sec=1800.0, timeout_base_sec=120.0, timeout_per_char_sec=3.0,
+    )
+    # Short text lands just above base (fails fast on a real hang), not the ceiling.
+    assert resolve(scaled, "你好", 180.0) == 126.0
+    # 300 chars -> 120 + 900 = 1020, still under the ceiling.
+    assert resolve(scaled, "x" * 300, 180.0) == 1020.0
+    # Pathological long text is clamped to the hard ceiling.
+    assert resolve(scaled, "x" * 5000, 180.0) == 1800.0
+
+    # base defaults to the global timeout when omitted; ceiling from inference_timeout_sec.
+    only_per_char = ModelSpec(
+        id="o", name="O", adapter="dummy", inference_timeout_sec=1000.0, timeout_per_char_sec=2.0,
+    )
+    assert resolve(only_per_char, "x" * 10, 60.0) == 80.0  # 60 + 2*10
+    assert resolve(only_per_char, "x" * 1000, 60.0) == 1000.0  # clamped to ceiling
+
+
+def test_single_model_applies_text_scaled_timeout(tmp_path: Path) -> None:
+    runner = ExternalOnlyRunner()
+    registry = ModelRegistry(
+        [
+            ModelSpec(
+                id="dummy", name="Dummy", adapter="dummy", enabled=True, num_threads=1,
+                worker_python="/dedicated/model/python",
+                inference_timeout_sec=1800.0, timeout_base_sec=120.0, timeout_per_char_sec=3.0,
+            )
+        ],
+        adapter_factories={"dummy": DummyTTSAdapter},
+    )
+    service = BenchmarkService(
+        registry, _guard(), RunArtifactStore(tmp_path / "exports"),
+        process_runner=runner,  # type: ignore[arg-type]
+        inference_timeout_sec=180.0,
+    )
+    # 120 + 3*100 = 420s: proves the scaled budget (not the 180s global) reaches the worker.
+    service.run(text="x" * 100, model_ids=["dummy"], cpu_threads_per_model=1)
+    assert runner.calls[0]["timeout_sec"] == 420.0
+
+
 def test_single_model_hard_timeout_maps_to_3001_and_recovers_status(tmp_path: Path) -> None:
     registry = _registry()
     service = BenchmarkService(

@@ -43,6 +43,11 @@ models:
     # ceiling above the global 180s so legitimate long synthesis is not cut off with
     # a spurious 3001. Generation stays bounded by max_new_tokens=8192 (~682s audio).
     inference_timeout_sec: 1800
+    # Text-scaled budget: base covers the ~4.4GB model load + fixed overhead, per-char
+    # covers autoregressive generation. A short prompt then fails fast on a real hang
+    # (~126s) while a 300-char case gets ~1020s, all capped at the 1800s ceiling.
+    timeout_base_sec: 120
+    timeout_per_char_sec: 3.0
 
   - id: qwen3-tts-0.6b-native-int8
     name: Qwen3-TTS 0.6B Native INT8
@@ -82,6 +87,11 @@ models:
     # exceeding the global 180s hard timeout for normal-length text (spurious
     # 3001). Raise its ceiling so legitimate synthesis is not cut off.
     inference_timeout_sec: 900
+    # Text-scaled budget (base = flow/hift load + fixed overhead, per-char = the
+    # autoregressive LM pass): a short prompt fails fast while a 300-char case gets
+    # ~540s, capped at the 900s ceiling.
+    timeout_base_sec: 90
+    timeout_per_char_sec: 1.5
 
   - id: melotts-zh
     name: MeloTTS Chinese

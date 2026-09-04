@@ -9,7 +9,7 @@ from uuid import uuid4
 from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.errors import ArenaError
 from edgetts_arena.core.metrics_collector import MetricsCollector
-from edgetts_arena.core.model_registry import ModelRegistry, ModelStatus
+from edgetts_arena.core.model_registry import ModelRegistry, ModelSpec, ModelStatus
 from edgetts_arena.core.process_runner import ProcessRunner, ProcessTimeoutError
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.system_info import collect_system_environment
@@ -199,11 +199,7 @@ class BenchmarkService:
                 raise ArenaError(1002, f"model '{model_id}' is unavailable", error_type="model_unavailable")
 
             capabilities = info.get("capabilities") or {}
-            timeout_sec = (
-                self.inference_timeout_sec
-                if record.spec.inference_timeout_sec is None
-                else float(record.spec.inference_timeout_sec)
-            )
+            timeout_sec = self._resolve_timeout_sec(record.spec, text, self.inference_timeout_sec)
             infer_kwargs = self._normalize_infer_config(
                 model_id=model_id,
                 info=info,
@@ -346,6 +342,37 @@ class BenchmarkService:
                         self.registry.unload(model_id)
                 except Exception:
                     self.registry.set_status(model_id, ModelStatus.ERROR, error="cleanup failed")
+
+    @staticmethod
+    def _resolve_timeout_sec(spec: ModelSpec, text: str, global_default: float) -> float:
+        """Hard inference timeout for synthesizing ``text`` once on ``spec``.
+
+        Static models (no ``timeout_per_char_sec``) use ``inference_timeout_sec`` or
+        the global default. Models that declare a per-char rate scale the budget with
+        text length so short text fails fast on a real hang while long text is not
+        spuriously cut off::
+
+            timeout = clamp(base + per_char * len(text), base, ceiling)
+
+        ``base`` (model load + fixed overhead) defaults to the global timeout when
+        omitted; ``ceiling`` is ``inference_timeout_sec`` (or the global default when
+        unset), so pathological long text can never request an unbounded budget.
+        """
+        if spec.timeout_per_char_sec is None:
+            return (
+                global_default
+                if spec.inference_timeout_sec is None
+                else float(spec.inference_timeout_sec)
+            )
+        base = global_default if spec.timeout_base_sec is None else float(spec.timeout_base_sec)
+        ceiling = (
+            global_default
+            if spec.inference_timeout_sec is None
+            else float(spec.inference_timeout_sec)
+        )
+        scaled = base + float(spec.timeout_per_char_sec) * len(text)
+        # Never below the fixed load allowance, never above the hard ceiling.
+        return max(base, min(scaled, ceiling))
 
     @staticmethod
     def _normalize_infer_config(

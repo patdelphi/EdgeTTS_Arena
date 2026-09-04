@@ -215,7 +215,11 @@ class RepeatedBenchmarkService:
             if self.process_runner is not None and not record.spec.keep_in_memory:
                 isolated = True
                 self.registry.set_status(model_id, ModelStatus.BUSY)
-                timeout = self.inference_timeout_sec * max(1, warmup_runs + measured_runs)
+                # Per-model ceiling + text-scaled budget (shared with single runs),
+                # multiplied by the number of synthesis passes in this group.
+                timeout = BenchmarkService._resolve_timeout_sec(
+                    record.spec, case.text, self.inference_timeout_sec
+                ) * max(1, warmup_runs + measured_runs)
                 task = {
                     "adapter": record.spec.adapter, "text": case.text,
                     # Resolved absolute path: the isolated worker may run with a
