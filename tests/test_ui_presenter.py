@@ -96,6 +96,29 @@ def test_model_status_and_choices_include_runtime_state() -> None:
     assert "language_control" in rows[0][3]
 
 
+def test_disabled_models_are_hidden_from_choices_and_status() -> None:
+    from edgetts_arena.ui.presenter import usable_model_ids
+
+    models = _models()
+    # A config-disabled variant (e.g. native-quantized Qwen3) must not surface.
+    models.append(
+        {
+            "id": "qwen3-tts-0.6b-native-int8",
+            "name": "Qwen3-TTS 0.6B Native INT8",
+            "status": "unavailable",
+            "enabled": False,
+            "experimental": True,
+            "capabilities": {},
+        }
+    )
+    choice_ids = [value for _, value in model_choices(models)]
+    assert "qwen3-tts-0.6b-native-int8" not in choice_ids
+    assert "qwen3-tts-0.6b-native-int8" not in usable_model_ids(models)
+    assert all(row[0] != "Qwen3-TTS 0.6B Native INT8" for row in status_rows(models))
+    # Models without an explicit "enabled" key stay visible (backward compatible).
+    assert "a" in choice_ids
+
+
 def test_result_presenter_shows_non_streaming_ttfb_as_na() -> None:
     result = {
         "model_id": "a",

@@ -76,7 +76,7 @@ def build_arena_ui(
 
         with gr.Tab("Arena"):
             with gr.Row():
-                with gr.Column(scale=4):
+                with gr.Column(scale=1, min_width=320):
                     preset = gr.Dropdown(
                         [("自定义", "__custom__")] + [(f"{c.id} · {c.name}", c.id) for c in presets.cases],
                         value="__custom__", label="预设",
@@ -93,6 +93,7 @@ def build_arena_ui(
                         [("顺序执行", "sequential"), ("并发执行", "concurrent")],
                         value="sequential", label="执行模式",
                     )
+                with gr.Column(scale=1, min_width=320):
                     threads = gr.Slider(1, 16, value=4, step=1, label="CPU线程数/模型")
                     with gr.Row():
                         speed = gr.Slider(
@@ -112,11 +113,9 @@ def build_arena_ui(
                         interactive=initial_caps["language_enabled"],
                     )
                     cap_summary = gr.Markdown(initial_caps["summary"])
-                    run_btn = gr.Button("运行基准测试", variant="primary")
-                with gr.Column(scale=6):
-                    run_summary = gr.Markdown("_尚未运行基准测试。_")
-                    export_file = gr.File(label="运行结果导出 ZIP", interactive=False)
+            run_btn = gr.Button("运行基准测试", variant="primary")
 
+            run_summary = gr.Markdown("_尚未运行基准测试。_")
             audios: list[gr.Audio] = []
             cards: list[gr.Markdown] = []
             for row in range(2):
@@ -129,6 +128,7 @@ def build_arena_ui(
             comparison = gr.Dataframe(
                 [], headers=COMPARISON_HEADERS, type="array", interactive=False, label="对比",
             )
+            export_file = gr.File(label="运行结果导出 ZIP", interactive=False)
 
         with gr.Tab("标准测试套件"):
             gr.Markdown(

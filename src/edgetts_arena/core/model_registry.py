@@ -322,6 +322,7 @@ class ModelRegistry:
             "id": record.spec.id,
             "name": record.spec.name,
             "status": record.status.value,
+            "enabled": record.spec.enabled,
             "experimental": record.spec.experimental,
             "model_version": "unknown",
             "runtime": "unknown",

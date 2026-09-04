@@ -6,6 +6,11 @@ from typing import Any
 def model_choices(models: list[dict[str, Any]]) -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = []
     for model in models:
+        # Models explicitly disabled in config (e.g. the native-quantized Qwen3
+        # variants that cannot be bootstrapped on this platform) are hidden from
+        # the picker entirely instead of showing as a dead "unavailable" row.
+        if model.get("enabled") is False:
+            continue
         status = str(model.get("status") or "unknown")
         experimental = " · 实验性" if model.get("experimental") else ""
         label = f"{model.get('name', model.get('id'))} · {status}{experimental}"
@@ -14,12 +19,18 @@ def model_choices(models: list[dict[str, Any]]) -> list[tuple[str, str]]:
 
 
 def usable_model_ids(models: list[dict[str, Any]]) -> list[str]:
-    return [str(item["id"]) for item in models if item.get("status") != "unavailable"]
+    return [
+        str(item["id"])
+        for item in models
+        if item.get("status") != "unavailable" and item.get("enabled") is not False
+    ]
 
 
 def status_rows(models: list[dict[str, Any]]) -> list[list[Any]]:
     rows: list[list[Any]] = []
     for model in models:
+        if model.get("enabled") is False:
+            continue
         capabilities = model.get("capabilities") or {}
         feature_names = [
             name
