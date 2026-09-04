@@ -78,6 +78,10 @@ models:
     experimental: true
     worker_python: ""
     worker_python_env: EDGETTS_ARENA_COSYVOICE_PYTHON
+    # CosyVoice 300M SFT (flow + hift PyTorch) is slow on CPU and was observed
+    # exceeding the global 180s hard timeout for normal-length text (spurious
+    # 3001). Raise its ceiling so legitimate synthesis is not cut off.
+    inference_timeout_sec: 900
 
   - id: melotts-zh
     name: MeloTTS Chinese

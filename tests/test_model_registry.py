@@ -58,6 +58,8 @@ def test_registry_applies_per_model_inference_timeout() -> None:
     # Qwen3-TTS 0.6B is slow on CPU for long text, so it ships a higher hard-timeout
     # ceiling; every other model inherits the global default (spec value is None).
     assert registry.get_record("qwen3-tts-0.6b").spec.inference_timeout_sec == 1800.0
+    # CosyVoice 300M SFT is also slow on CPU and ships a raised ceiling.
+    assert registry.get_record("cosyvoice-300m-sft").spec.inference_timeout_sec == 900.0
     assert registry.get_record("dummy").spec.inference_timeout_sec is None
     assert registry.get_record("piper").spec.inference_timeout_sec is None
 
