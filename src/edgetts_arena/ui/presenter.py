@@ -7,7 +7,7 @@ def model_choices(models: list[dict[str, Any]]) -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = []
     for model in models:
         status = str(model.get("status") or "unknown")
-        experimental = " · experimental" if model.get("experimental") else ""
+        experimental = " · 实验性" if model.get("experimental") else ""
         label = f"{model.get('name', model.get('id'))} · {status}{experimental}"
         choices.append((label, str(model["id"])))
     return choices
@@ -31,7 +31,7 @@ def status_rows(models: list[dict[str, Any]]) -> list[list[Any]]:
             [
                 model.get("name", model.get("id")),
                 model.get("status", "unknown"),
-                "yes" if model.get("experimental") else "no",
+                "是" if model.get("experimental") else "否",
                 ", ".join(feature_names) or "—",
                 languages,
             ]
@@ -64,7 +64,7 @@ def capability_view(
             "language_enabled": False,
             "languages": [],
             "streaming_enabled": False,
-            "summary": "Select at least one model.",
+            "summary": "请至少选择一个模型。",
         }
 
     caps = [item.get("capabilities") or {} for item in selected]
@@ -90,19 +90,19 @@ def capability_view(
 
     unavailable = [str(item["id"]) for item in selected if item.get("status") == "unavailable"]
     lines = [
-        f"Selected: **{len(selected)}** model(s)",
-        f"Speed control: **{'enabled' if speed_enabled else 'disabled'}**",
-        "Seed: **partial support**" if seed_partial else f"Seed: **{'enabled' if seed_enabled else 'disabled'}**",
-        f"Shared voice control: **{'enabled' if voice_enabled else 'disabled'}**",
-        f"Shared language control: **{'enabled' if language_enabled else 'disabled'}**",
-        f"Streaming preview capable: **{'yes' if streaming_enabled else 'no'}**",
+        f"已选择: **{len(selected)}** 个模型",
+        f"语速控制: **{'已启用' if speed_enabled else '已禁用'}**",
+        "随机种子: **部分支持**" if seed_partial else f"随机种子: **{'已启用' if seed_enabled else '已禁用'}**",
+        f"共享音色控制: **{'已启用' if voice_enabled else '已禁用'}**",
+        f"共享语言控制: **{'已启用' if language_enabled else '已禁用'}**",
+        f"流式预览能力: **{'是' if streaming_enabled else '否'}**",
     ]
     if len(selected) > 1 and not voice_enabled:
-        lines.append("No common selectable voice; each model will use its default voice.")
+        lines.append("无共同可选音色，每个模型将使用默认音色。")
     if len(selected) > 1 and not language_enabled:
-        lines.append("No common explicit language; each model will use its default language.")
+        lines.append("无共同明确语言，每个模型将使用默认语言。")
     if unavailable:
-        lines.append("Unavailable: " + ", ".join(unavailable))
+        lines.append("不可用: " + ", ".join(unavailable))
     return {
         "speed_enabled": speed_enabled,
         "seed_enabled": seed_enabled,
@@ -121,34 +121,80 @@ def format_result_card(
     model_names: dict[str, str] | None = None,
 ) -> str:
     if not result:
-        return "_No result_"
+        return "_暂无结果_"
     model_id = str(result.get("model_id") or "unknown")
     display = (model_names or {}).get(model_id, model_id)
     if result.get("status") != "success":
         error = result.get("error") or {}
         return (
             f"### {display}\n"
-            f"**Status:** error  \n"
+            f"**状态:** ❌ 错误  \n"
             f"**{error.get('type', 'error')} ({error.get('code', '—')}):** "
-            f"{error.get('message', 'Unknown model error')}"
+            f"{error.get('message', '未知模型错误')}"
         )
 
     metrics = result.get("metrics") or {}
+    config = result.get("config") or {}
     ttfb = metrics.get("ttfb_ms")
-    ttfb_text = "N/A (non-streaming)" if ttfb is None else f"{float(ttfb):.1f} ms"
+    ttfb_text = "不适用 (非流式)" if ttfb is None else f"{float(ttfb):.1f} ms"
     warnings = result.get("warnings") or []
     warning_text = "<br>".join(str(item) for item in warnings) if warnings else "—"
+    
+    # 获取调用配置信息
+    voice = config.get("voice") or "默认"
+    language = config.get("language") or "默认"
+    speed = config.get("speed") or 1.0
+    seed = config.get("seed")
+    seed_text = str(seed) if seed is not None else "无"
+    threads = config.get("num_threads") or "—"
+    sample_rate = metrics.get("sample_rate") or "—"
+    audio_samples = metrics.get("audio_samples") or "—"
+    execution_mode = result.get("execution_mode") or "—"
+    
+    # 获取模型运行时长信息（顺序执行时）
+    model_duration_sec = result.get("model_duration_sec")
+    model_started_at = result.get("model_started_at")
+    model_completed_at = result.get("model_completed_at")
+    
+    duration_text = ""
+    if model_duration_sec is not None:
+        duration_text = (
+            f"---\n"
+            f"**运行时间:**\n"
+            f"- 总耗时: **{model_duration_sec:.2f} 秒**\n"
+            f"- 开始时间: `{model_started_at}`\n"
+            f"- 完成时间: `{model_completed_at}`\n"
+        )
+    
     return (
         f"### {display}\n"
-        f"**Status:** success  \n"
-        f"Inference: **{_fmt(metrics.get('inference_time_ms'))} ms** · "
-        f"Audio: **{_fmt(metrics.get('audio_duration_ms'))} ms** · "
-        f"RTF: **{_fmt(metrics.get('rtf'), 3)}**  \n"
-        f"Peak RSS: **{_fmt(metrics.get('peak_rss_mb'))} MB** · "
-        f"RSS Δ: **{_fmt(metrics.get('rss_delta_mb'))} MB** · "
-        f"CPU: **{_fmt(metrics.get('avg_cpu_usage_pct'))}%**  \n"
-        f"TTFB: **{ttfb_text}**  \n"
-        f"Warnings: {warning_text}"
+        f"**状态:** ✅ 成功  \n"
+        f"---\n"
+        f"**调用参数:**\n"
+        f"- 音色: `{voice}`\n"
+        f"- 语言: `{language}`\n"
+        f"- 语速: `{speed}x`\n"
+        f"- 随机种子: `{seed_text}`\n"
+        f"- 线程数: `{threads}`\n"
+        f"---\n"
+        f"**性能指标:**\n"
+        f"- 推理耗时: **{_fmt(metrics.get('inference_time_ms'))} ms**\n"
+        f"- 音频时长: **{_fmt(metrics.get('audio_duration_ms'))} ms**\n"
+        f"- 实时率(RTF): **{_fmt(metrics.get('rtf'), 3)}**\n"
+        f"- 首包延迟(TTFB): **{ttfb_text}**\n"
+        f"---\n"
+        f"**资源占用:**\n"
+        f"- 峰值内存: **{_fmt(metrics.get('peak_rss_mb'))} MB**\n"
+        f"- 内存增量: **{_fmt(metrics.get('rss_delta_mb'))} MB**\n"
+        f"- CPU使用率: **{_fmt(metrics.get('avg_cpu_usage_pct'))}%**\n"
+        f"---\n"
+        f"**音频信息:**\n"
+        f"- 采样率: `{sample_rate} Hz`\n"
+        f"- 采样数: `{audio_samples}`\n"
+        f"- 执行模式: `{execution_mode}`\n"
+        f"{duration_text}"
+        f"---\n"
+        f"**警告:** {warning_text}"
     )
 
 
@@ -173,7 +219,7 @@ def comparison_rows(
                 _number(metrics.get("peak_rss_mb")),
                 _number(metrics.get("rss_delta_mb")),
                 _number(metrics.get("avg_cpu_usage_pct")),
-                "N/A" if ttfb is None else _number(ttfb),
+                "不适用" if ttfb is None else _number(ttfb),
                 error.get("message", "") if result.get("status") != "success" else "",
             ]
         )
@@ -182,7 +228,7 @@ def comparison_rows(
 
 def _fmt(value: Any, digits: int = 1) -> str:
     if value is None:
-        return "N/A"
+        return "不适用"
     try:
         return f"{float(value):.{digits}f}"
     except (TypeError, ValueError):

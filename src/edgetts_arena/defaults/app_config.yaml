@@ -2,7 +2,16 @@ host: 127.0.0.1
 port: 8000
 log_level: INFO
 default_num_threads: 4
-inference_timeout_sec: 60
+inference_timeout_sec: 180
+
+# 模型搜索路径（按优先级顺序）
+# 相对路径会相对于项目根目录解析
+# 支持环境变量展开（如 ${HOME} 或 %USERPROFILE%）
+# 注意：model_path 配置中已包含 ./models/ 前缀，所以搜索路径只需指定基础目录
+model_search_paths:
+  - "${HF_HOME:-~/.cache}/huggingface/hub"
+  - "."
+
 resource_guard:
   min_available_memory_mb_soft: 1536
   min_available_memory_mb_hard: 768

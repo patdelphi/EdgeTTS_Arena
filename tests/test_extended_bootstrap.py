@@ -63,10 +63,15 @@ def test_cosyvoice_bootstrap_plan_exports_runtime_paths(tmp_path: Path) -> None:
     commands = _commands(plan)
     assert plan.required_tools == ("git", "sox")
     assert len(plan.pythonpath_entries) == 2
-    assert plan.environment["EDGETTS_ARENA_COSYVOICE_WETEXT_DIR"].endswith("models/cosyvoice/wetext")
+    # 使用 normpath 确保跨平台路径比较
+    from os.path import normpath
+    actual = normpath(plan.environment["EDGETTS_ARENA_COSYVOICE_WETEXT_DIR"])
+    expected = normpath("models/cosyvoice/wetext")
+    assert actual.replace("\\", "/").endswith(expected.replace("\\", "/"))
     assert any(COSY_MODEL_REVISION in command for command in commands)
     clone = next(step for step in plan.steps if step.label == "clone CosyVoice source")
-    assert clone.skip_if_exists and clone.skip_if_exists.endswith("vendor/CosyVoice/.git")
+    # 跨平台路径比较
+    assert clone.skip_if_exists and clone.skip_if_exists.replace("\\", "/").endswith("vendor/CosyVoice/.git")
 
 
 def test_bootstrap_can_skip_heavy_assets(tmp_path: Path) -> None:

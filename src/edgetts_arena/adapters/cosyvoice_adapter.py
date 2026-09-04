@@ -242,6 +242,29 @@ class CosyVoiceTTSAdapter(BaseTTSAdapter):
         offline_normalizer = build_offline_wetext_normalizer(wetext.Normalizer, self._resolved_wetext_dir)
         wetext.Normalizer = offline_normalizer
 
+        # Defence in depth: the offline bridge above always supplies local FST
+        # paths, so wetext never needs the network. Hard-block the modelscope
+        # download that wetext falls back to when those paths are missing;
+        # otherwise a network failure surfaces as the cryptic
+        # "'NoneType' object has no attribute 'splitlines'" (3002) deep inside
+        # modelscope instead of a clear, actionable offline-assets error.
+        import wetext.wetext as wetext_impl
+
+        resolved_dir = self._resolved_wetext_dir
+
+        def _blocked_snapshot_download(*_args: Any, **_kwargs: Any) -> Any:
+            raise ArenaError(
+                1002,
+                "CosyVoice WeText frontend attempted a network download "
+                "(modelscope snapshot_download of 'pengzhendong/wetext'). Offline "
+                f"operation requires local FST assets under {resolved_dir}; run "
+                "scripts/prepare_cosyvoice_frontend.py and set "
+                "EDGETTS_ARENA_COSYVOICE_WETEXT_DIR if they are missing.",
+                error_type="model_unavailable",
+            )
+
+        wetext_impl.snapshot_download = _blocked_snapshot_download
+
         try:
             from cosyvoice.cli.cosyvoice import AutoModel
             import cosyvoice.cli.frontend as frontend_module

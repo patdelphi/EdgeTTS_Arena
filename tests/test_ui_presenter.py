@@ -113,9 +113,9 @@ def test_result_presenter_shows_non_streaming_ttfb_as_na() -> None:
         "error": None,
     }
     card = format_result_card(result, {"a": "Model A"})
-    assert "N/A (non-streaming)" in card
+    assert "不适用 (非流式)" in card
     rows = comparison_rows([result], {"a": "Model A"})
-    assert rows[0][8] == "N/A"
+    assert rows[0][8] == "不适用"
 
 
 def test_suite_result_rows_uses_aggregate_statistics() -> None:

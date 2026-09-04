@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,35 @@ class AppSettings:
     default_num_threads: int = 4
     inference_timeout_sec: int = 60
     resource_guard: ResourceGuardSettings = ResourceGuardSettings()
+    # 模型搜索路径（按优先级顺序），支持环境变量展开
+    model_search_paths: tuple[str, ...] = (
+        "${HF_HOME:-~/.cache}/huggingface/hub",
+        "./models",
+    )
+
+
+def _expand_env_var(value: str) -> str:
+    """展开环境变量，支持 ${VAR:-default} 语法"""
+    def replace_match(match: re.Match) -> str:
+        var_name = match.group(1)
+        default = match.group(3) if match.group(2) else ""
+        return os.environ.get(var_name, os.path.expanduser(default) if default else "")
+    
+    # 匹配 ${VAR} 或 ${VAR:-default}
+    pattern = r'\$\{([^}:]+)(:-([^}]*))?\}'
+    return re.sub(pattern, replace_match, value)
+
+
+def _resolve_search_paths(paths: list[str], project_root: Path) -> tuple[str, ...]:
+    """解析搜索路径列表，展开环境变量并转换为绝对路径"""
+    resolved = []
+    for p in paths:
+        expanded = _expand_env_var(p)
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = project_root / path
+        resolved.append(str(path.resolve()))
+    return tuple(resolved)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -44,7 +74,8 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
-    raw = _read_yaml(Path(path))
+    config_path = Path(path)
+    raw = _read_yaml(config_path)
     guard_raw = raw.get("resource_guard", {}) or {}
     guard = ResourceGuardSettings(
         min_available_memory_mb_soft=int(
@@ -63,6 +94,15 @@ def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
             os.getenv("EDGETTS_ARENA_MAX_CONCURRENT_MODELS", guard_raw.get("max_concurrent_models", 4))
         ),
     )
+    
+    # 解析模型搜索路径
+    project_root = config_path.parent.parent if config_path.exists() else Path.cwd()
+    search_paths_raw = raw.get("model_search_paths") or [
+        "${HF_HOME:-~/.cache}/huggingface/hub",
+        "./models",
+    ]
+    search_paths = _resolve_search_paths(search_paths_raw, project_root)
+    
     return AppSettings(
         host=os.getenv("EDGETTS_ARENA_HOST", raw.get("host", "127.0.0.1")),
         port=int(os.getenv("EDGETTS_ARENA_PORT", raw.get("port", 8000))),
@@ -72,4 +112,5 @@ def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
             os.getenv("EDGETTS_ARENA_INFERENCE_TIMEOUT_SEC", raw.get("inference_timeout_sec", 60))
         ),
         resource_guard=guard,
+        model_search_paths=search_paths,
     )

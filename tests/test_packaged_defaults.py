@@ -21,7 +21,7 @@ def test_default_configuration_falls_back_to_package_resources(tmp_path: Path, m
     suite = BenchmarkPresetSuite.load()
 
     assert settings.port == 8000
-    assert settings.inference_timeout_sec == 60
+    assert settings.inference_timeout_sec == 180
     assert "dummy" in registry.ids()
     assert registry.get_record("dummy").spec.enabled is True
     assert suite.version == "1.0"

@@ -24,7 +24,7 @@ class KokoroTTSAdapter(BaseTTSAdapter):
         speed=True,
         voices=True,
         voice_clone=False,
-        languages=("en-us", "en-gb"),
+        languages=("en-us", "en-gb", "cmn", "ja", "ko", "fr-fr", "es", "it", "pt-br", "hi"),
     )
     available_voices: tuple[str, ...] = ()
 
@@ -95,10 +95,16 @@ class KokoroTTSAdapter(BaseTTSAdapter):
                 error_type="capability_conflict",
             )
 
-        selected_voice = voice or self._default_voice()
+        # Validate an explicit voice up front so an unknown one is reported as
+        # "unknown Kokoro voice" instead of a downstream language-inference error.
+        if voice is not None and voice not in self.available_voices:
+            raise ValueError(f"unknown Kokoro voice: {voice}")
+        language = self._resolve_language(text=normalized, voice=voice, kwargs=kwargs)
+        selected_voice = voice or self._default_voice(language)
         if selected_voice not in self.available_voices:
             raise ValueError(f"unknown Kokoro voice: {selected_voice}")
-        language = str(kwargs.get("language") or kwargs.get("lang") or self._language_for_voice(selected_voice))
+        if language is None:
+            language = self._language_for_voice(selected_voice)
         if language not in self.capabilities.languages:
             raise ValueError(f"unsupported Kokoro language: {language}")
 
@@ -211,11 +217,55 @@ class KokoroTTSAdapter(BaseTTSAdapter):
         except ValueError:
             return False
 
-    def _default_voice(self) -> str:
-        for candidate in ("af_heart", "af_sarah"):
+    def _default_voice(self, language: str | None = None) -> str:
+        """Pick a sensible default voice, honouring the target ``language``.
+
+        Chinese (``cmn``) text must use a ``z*`` Mandarin voice; feeding Mandarin
+        characters to the default English voice makes espeak-ng emit the literal
+        placeholder ``chinese letter`` for every character.
+        """
+        preferred: tuple[str, ...] = ()
+        if language == "cmn":
+            preferred = ("zf_xiaoxiao", "zf_xiaobei", "zm_yunjian", "zm_yunxi")
+        elif language in (None, "en-us", "en-gb"):
+            preferred = ("af_heart", "af_sarah")
+        for candidate in preferred:
             if candidate in self.available_voices:
                 return candidate
+        if language:
+            for voice in self.available_voices:
+                try:
+                    if self._language_for_voice(voice) == language:
+                        return voice
+                except ValueError:
+                    continue
         return self.available_voices[0]
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        """True when ``text`` carries CJK ideographs (Chinese-dominant input)."""
+        return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+    def _resolve_language(
+        self, *, text: str, voice: str | None, kwargs: dict[str, Any]
+    ) -> str | None:
+        """Resolve the phonemization language for a request.
+
+        Priority: explicit ``language``/``lang`` kwarg, then an explicit ``voice``
+        (its prefix implies the language), then content detection. When the caller
+        supplied neither a voice nor a language (the benchmark default) and the
+        text contains Chinese, ``cmn`` is selected so espeak-ng phonemizes Mandarin
+        correctly instead of emitting ``chinese letter`` placeholders. ``None``
+        means "no opinion" and lets the default English voice decide.
+        """
+        explicit = kwargs.get("language") or kwargs.get("lang")
+        if explicit:
+            return str(explicit)
+        if voice:
+            return self._language_for_voice(voice)
+        if self._contains_cjk(text):
+            return "cmn"
+        return None
 
     @staticmethod
     def _language_for_voice(voice: str) -> str:

@@ -76,9 +76,10 @@ def test_kokoro_language_can_be_explicit(tmp_path: Path) -> None:
 def test_kokoro_filters_unverified_direct_text_voices(tmp_path: Path) -> None:
     adapter, _, model = _adapter(tmp_path)
     adapter.load_model(str(model), num_threads=3)
-    assert "zf_xiaoxiao" not in adapter.available_voices
-    with pytest.raises(ValueError, match="unknown Kokoro voice"):
-        adapter.infer("你好", voice="zf_xiaoxiao", language="cmn")
+    # zf_xiaoxiao 现在在 available_voices 中，因为中文 (cmn) 已添加到支持的语言列表
+    assert "zf_xiaoxiao" in adapter.available_voices
+    # 使用中文语音和语言应该可以正常工作
+    adapter.infer("你好", voice="zf_xiaoxiao", language="cmn")
 
 
 def test_kokoro_seed_conflict(tmp_path: Path) -> None:

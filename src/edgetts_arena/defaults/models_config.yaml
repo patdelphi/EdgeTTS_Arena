@@ -10,7 +10,7 @@ models:
 
   - id: piper
     name: Piper
-    enabled: false
+    enabled: true
     adapter: piper
     model_path: ./models/piper
     keep_in_memory: false
@@ -19,7 +19,7 @@ models:
 
   - id: kokoro
     name: Kokoro
-    enabled: false
+    enabled: true
     adapter: kokoro
     model_path: ./models/kokoro
     keep_in_memory: false
@@ -29,7 +29,7 @@ models:
 
   - id: qwen3-tts-0.6b
     name: Qwen3-TTS 0.6B CustomVoice
-    enabled: false
+    enabled: true
     adapter: qwen3
     model_path: ./models/qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
     keep_in_memory: false
@@ -38,9 +38,17 @@ models:
     worker_python: ""
     worker_python_env: EDGETTS_ARENA_QWEN3_PYTHON
     language_control: true
+    # Qwen3-TTS 0.6B is an autoregressive PyTorch model; long-text cases (e.g. the
+    # 300+ char TC-05 preset) can take many minutes on CPU. Raise its hard-timeout
+    # ceiling above the global 180s so legitimate long synthesis is not cut off with
+    # a spurious 3001. Generation stays bounded by max_new_tokens=8192 (~682s audio).
+    inference_timeout_sec: 1800
 
   - id: qwen3-tts-0.6b-native-int8
     name: Qwen3-TTS 0.6B Native INT8
+    # Native C runtime needs make/gcc; scripts/bootstrap_qwen3_native.py refuses
+    # to run on native Windows (WSL/Linux only), so models/qwen3-native cannot be
+    # prepared here. Disabled to avoid a guaranteed 1001 error in every benchmark.
     enabled: false
     adapter: qwen3_native
     model_path: ./models/qwen3-native/int8/model.json
@@ -51,6 +59,7 @@ models:
 
   - id: qwen3-tts-0.6b-native-int4
     name: Qwen3-TTS 0.6B Native INT4
+    # See qwen3-tts-0.6b-native-int8: unsupported on native Windows, disabled.
     enabled: false
     adapter: qwen3_native
     model_path: ./models/qwen3-native/int4/model.json
@@ -61,7 +70,7 @@ models:
 
   - id: cosyvoice-300m-sft
     name: CosyVoice 300M SFT
-    enabled: false
+    enabled: true
     adapter: cosyvoice
     model_path: ./models/cosyvoice/CosyVoice-300M-SFT
     keep_in_memory: false
@@ -72,7 +81,7 @@ models:
 
   - id: melotts-zh
     name: MeloTTS Chinese
-    enabled: false
+    enabled: true
     adapter: melotts
     model_path: ./models/melotts/zh/model.json
     keep_in_memory: false

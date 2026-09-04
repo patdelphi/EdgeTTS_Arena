@@ -125,4 +125,8 @@ def test_offline_wetext_remove_erhua_uses_explicit_variant(tmp_path: Path) -> No
     root = _wetext_dir(tmp_path)
     normalizer_cls = build_offline_wetext_normalizer(FakeWetextNormalizer, root)
     normalizer_cls(lang="zh", remove_erhua=True)
-    assert FakeWetextNormalizer.calls[0]["verbalizer_path"].endswith("zh/tn/verbalizer_remove_erhua.fst")
+    # 使用 normpath 确保跨平台路径比较
+    from os.path import normpath
+    actual = normpath(FakeWetextNormalizer.calls[0]["verbalizer_path"])
+    expected = normpath("zh/tn/verbalizer_remove_erhua.fst")
+    assert actual.replace("\\", "/").endswith(expected.replace("\\", "/"))

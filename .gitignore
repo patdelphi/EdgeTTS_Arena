@@ -1,10 +1,13 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_tmp/
 .coverage
 htmlcov/
 .venv/
+.venv-*/
 venv/
+vendor/
 .env
 .DS_Store
 *.egg-info/

@@ -28,6 +28,62 @@ Windows PowerShell：`py -3.11 -m venv .venv`，然后 `.\.venv\Scripts\Activate
 
 建议验收顺序：Doctor → Dummy/API → Piper → Kokoro → UI → Sequential 对比 → Blind AB → Standard Suite → ZIP/report/environment。
 
+## 多模型 worker 环境（启动前必读）
+
+Piper / Kokoro / Dummy 直接在主 `.venv` 里运行，无需额外配置。但 **Qwen3-TTS 0.6B（PyTorch/qwen-tts）、CosyVoice、MeloTTS** 各自依赖一套独立的重型运行时，混装在主环境会互相冲突，因此它们跑在**各自的专用 venv** 中，通过环境变量路由：
+
+| 模型 | 专用 venv | 环境变量 | env 脚本 |
+|---|---|---|---|
+| Qwen3-TTS 0.6B CustomVoice | `.venv-qwen3` | `EDGETTS_ARENA_QWEN3_PYTHON` | `exports/bootstrap/qwen3/env.ps1` |
+| CosyVoice 300M SFT | `.venv-cosyvoice` | `EDGETTS_ARENA_COSYVOICE_PYTHON` | `exports/bootstrap/cosyvoice/env.ps1` |
+| MeloTTS Chinese | `.venv-melotts` | `EDGETTS_ARENA_MELOTTS_PYTHON` | `exports/bootstrap/melotts/env.ps1` |
+
+### 方式 A：一键启动脚本（推荐）
+
+仓库根目录的 `start.ps1`（Windows）/ `start.sh`（Linux/macOS）会自动 source 已 bootstrap 的各 env 脚本、报告 worker 配置状态，然后启动 Arena：
+
+```powershell
+.\start.ps1            # 启动 Arena UI（默认）
+.\start.ps1 -NoUi      # 仅启动 JSON API
+.\start.ps1 -Doctor    # 运行部署自检后退出
+.\start.ps1 -Suite piper kokoro   # 直接跑标准 suite
+```
+
+```bash
+./start.sh             # 启动 Arena UI（默认）
+./start.sh --no-ui     # 仅启动 JSON API
+./start.sh --doctor    # 运行部署自检后退出
+./start.sh --suite piper kokoro
+```
+
+尚未 bootstrap 的模型（env 脚本不存在）会被自动跳过并提示，不影响其它模型。
+
+### 方式 B：手动 source
+
+**启动 `serve` / `suite` 前，必须在同一个 shell 里先 source 对应脚本**，否则这些模型会回退到主环境 spawn 执行，并因缺少运行时而报晦涩错误（如 qwen-tts `ImportError`、CosyVoice `'NoneType' object has no attribute 'splitlines'`）：
+
+```powershell
+# Windows PowerShell（开头的 ". " 表示在当前 shell 内执行，不能省略）
+. .\exports\bootstrap\qwen3\env.ps1
+. .\exports\bootstrap\cosyvoice\env.ps1
+. .\exports\bootstrap\melotts\env.ps1
+edgetts-arena serve --ui
+```
+
+```bash
+# Linux / macOS bash
+source exports/bootstrap/qwen3/env.sh
+source exports/bootstrap/cosyvoice/env.sh
+source exports/bootstrap/melotts/env.sh
+edgetts-arena serve --ui
+```
+
+`edgetts-arena serve` 启动时会**自检**：若某个专用 worker 环境变量未设置，会在 stderr 打印 `[startup-check]` 警告并给出要 source 的脚本；`edgetts-arena doctor` 的 JSON 报告也带 `worker_env_warnings` 字段。这些只是提示，不阻塞 Piper/Kokoro/Dummy。
+
+> **Qwen3-TTS 能在 Windows 原生运行吗？** 能——指 **PyTorch/Transformers 版**（`qwen-tts` 包，模型 id `qwen3-tts-0.6b`）。用 CPU 版 torch（`torch==2.8.0+cpu`）即可，**不需要 CUDA、不需要 flash-attn**：适配器已固定 `device_map="cpu"`、`dtype=float32`，从不传 `flash_attention_2`。加载时会看到两条**无害警告**——`flash-attn is not installed`（自动回退 PyTorch 手动实现）与 `SoX could not be found`（音频后端提示，不影响本项目推理）。0.6B fp32 在 CPU 上单句合成约 30–50s，属正常速度。
+>
+> 相对地，**native INT8/INT4**（`qwen3-tts.cpp` 纯 C 运行时，id `qwen3-tts-0.6b-native-int8/int4`）需要 `make/gcc` 编译，`scripts/bootstrap_qwen3_native.py` 在原生 Windows 上直接拒绝执行，因此这两项在 Windows 上**已默认禁用**（`enabled: false`）；如需评测请走 WSL/Linux。
+
 ## 扩展模型 pinned bootstrap
 
 Qwen3 official、MeloTTS、CosyVoice：

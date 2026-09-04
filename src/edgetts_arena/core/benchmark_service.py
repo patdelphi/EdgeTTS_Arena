@@ -80,16 +80,23 @@ class BenchmarkService:
         self.artifact_store.create_run(run_id)
 
         if execution_mode == "sequential":
-            results = [
-                self._run_model(
+            results = []
+            for model_id in model_ids:
+                model_started_at = utc_now()
+                result = self._run_model(
                     run_id=run_id,
                     model_id=model_id,
                     text=text,
                     num_threads=threads,
                     config=config,
                 )
-                for model_id in model_ids
-            ]
+                model_completed_at = utc_now()
+                # 计算模型运行时长（秒）
+                model_duration_sec = (model_completed_at - model_started_at).total_seconds()
+                result["model_duration_sec"] = model_duration_sec
+                result["model_started_at"] = iso_utc(model_started_at)
+                result["model_completed_at"] = iso_utc(model_completed_at)
+                results.append(result)
         else:
             indexed: dict[int, dict[str, Any]] = {}
             with ThreadPoolExecutor(max_workers=len(model_ids), thread_name_prefix="arena-model") as pool:
@@ -162,6 +169,11 @@ class BenchmarkService:
                 raise ArenaError(1002, f"model '{model_id}' is unavailable", error_type="model_unavailable")
 
             capabilities = info.get("capabilities") or {}
+            timeout_sec = (
+                self.inference_timeout_sec
+                if record.spec.inference_timeout_sec is None
+                else float(record.spec.inference_timeout_sec)
+            )
             infer_kwargs = self._normalize_infer_config(
                 model_id=model_id,
                 info=info,
@@ -177,7 +189,10 @@ class BenchmarkService:
                 self.registry.set_status(model_id, ModelStatus.BUSY)
                 task = {
                     "adapter": record.spec.adapter,
-                    "model_path": record.spec.model_path,
+                    # Use the resolved absolute path: the isolated worker may run
+                    # with a different CWD, where the raw relative model_path would
+                    # not resolve (a source of spurious 1001/3002 worker errors).
+                    "model_path": record.spec.resolved_model_path or record.spec.model_path,
                     "text": text,
                     "num_threads": num_threads,
                     "infer_kwargs": infer_kwargs,
@@ -190,11 +205,11 @@ class BenchmarkService:
                             record.spec.worker_python,
                             "single",
                             task,
-                            timeout_sec=self.inference_timeout_sec,
+                            timeout_sec=timeout_sec,
                         )
                     else:
                         process_result = self.process_runner.run(
-                            run_isolated_model, task, timeout_sec=self.inference_timeout_sec
+                            run_isolated_model, task, timeout_sec=timeout_sec
                         )
                 except ProcessTimeoutError as exc:
                     path.unlink(missing_ok=True)
@@ -207,7 +222,7 @@ class BenchmarkService:
                         "error": {
                             "code": 3001,
                             "type": "inference_timeout",
-                            "message": f"model inference exceeded {self.inference_timeout_sec:.3f}s hard timeout",
+                            "message": f"model inference exceeded {timeout_sec:.3f}s hard timeout",
                         },
                         "metadata": None,
                         "worker": exc.diagnostics(),
@@ -249,6 +264,7 @@ class BenchmarkService:
                     "status": "success",
                     "audio_url": f"/api/v1/audio/download/{run_id}/{filename}",
                     "metrics": payload.get("metrics"),
+                    "config": config,
                     "warnings": warnings,
                     "error": None,
                     "metadata": payload.get("metadata"),
@@ -271,6 +287,7 @@ class BenchmarkService:
                 "status": "success",
                 "audio_url": f"/api/v1/audio/download/{run_id}/{filename}",
                 "metrics": metrics.to_dict(),
+                "config": config,
                 "warnings": warnings,
                 "error": None,
                 "metadata": output.metadata,

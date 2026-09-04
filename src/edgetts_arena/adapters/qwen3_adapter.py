@@ -210,7 +210,11 @@ class Qwen3TTSAdapter(BaseTTSAdapter):
         except ImportError as exc:
             raise ArenaError(
                 1002,
-                "Qwen3-TTS runtime is not installed. Install the official qwen-tts package in the dedicated model environment.",
+                "Qwen3-TTS runtime (qwen-tts) is not importable in this interpreter. "
+                "This model must run in its dedicated worker environment: set "
+                "EDGETTS_ARENA_QWEN3_PYTHON to that venv's Python (for example by "
+                "sourcing exports/bootstrap/qwen3/env.ps1) so the benchmark launches "
+                "it with qwen-tts installed.",
                 error_type="model_unavailable",
             ) from exc
 

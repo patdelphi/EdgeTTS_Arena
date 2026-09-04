@@ -302,6 +302,15 @@ class ProcessRunner:
         env["PYTHONPATH"] = src_root + (
             os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
         )
+        # Pin the worker's std streams to UTF-8 so the JSON protocol survives a
+        # non-UTF-8 locale (e.g. Windows cp936/GBK). The parent talks UTF-8 below
+        # (Popen encoding="utf-8"); without this the worker decodes stdin as the
+        # locale codec (turning non-ASCII text into mojibake / lone surrogates that
+        # break Rust tokenizers -> "TextEncodeInput must be Union[...]"), and it
+        # re-encodes its UTF-8 result frame as GBK on stdout, which the parent then
+        # fails to decode -> the frame is lost ("completed without a result frame").
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         started = time.perf_counter()
         cgroup_before = read_linux_cgroup_memory_events()
         try:
@@ -312,6 +321,10 @@ class ProcessRunner:
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
+                # Never let a stray non-UTF-8 byte (e.g. a native library writing
+                # GBK straight to fd 1/2) kill the reader thread and drop the whole
+                # result frame; replace undecodable bytes instead of raising.
+                errors="replace",
                 env=env,
             )
         except OSError as exc:
@@ -381,7 +394,7 @@ class ProcessRunner:
             )
 
         result_line = next(
-            (line for line in reversed(stdout.splitlines()) if line.startswith(_EXTERNAL_RESULT_PREFIX)),
+            (line for line in reversed((stdout or "").splitlines()) if line.startswith(_EXTERNAL_RESULT_PREFIX)),
             None,
         )
         if result_line is None:

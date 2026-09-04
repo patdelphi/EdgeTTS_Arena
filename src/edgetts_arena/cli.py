@@ -10,7 +10,7 @@ from edgetts_arena.adapters import DummyTTSAdapter, KokoroTTSAdapter, PiperTTSAd
 from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBenchmarkService
 from edgetts_arena.core.config import load_settings
-from edgetts_arena.core.model_registry import ModelRegistry
+from edgetts_arena.core.model_registry import ModelRegistry, collect_worker_env_warnings
 from edgetts_arena.core.process_runner import ProcessRunner
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.logging import configure_logging
@@ -80,6 +80,26 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=None, help="bind port; defaults to app config")
     serve.add_argument("--reload", action="store_true", help="enable uvicorn auto-reload for development")
     serve.add_argument("--ui", action="store_true", help="mount the optional Gradio Arena UI at /arena")
+
+    download = subparsers.add_parser("download", help="download TTS models")
+    download.add_argument(
+        "model",
+        nargs="?",
+        default=None,
+        help="model id to download; if omitted, list available models",
+    )
+    download.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_models",
+        help="list all downloadable models",
+    )
+    download.add_argument(
+        "--all",
+        action="store_true",
+        dest="download_all",
+        help="download all available models",
+    )
     return parser
 
 
@@ -229,6 +249,10 @@ def collect_doctor_report(
             record("external_workers", False, f"{type(exc).__name__}: {exc}")
 
     ready = all(bool(check["ok"]) for check in checks)
+    try:
+        worker_env_warnings = collect_worker_env_warnings(ModelRegistry.from_yaml())
+    except Exception:  # pragma: no cover - defensive; never fail doctor on this notice
+        worker_env_warnings = []
     return {
         "ready": ready,
         "python": platform.python_version(),
@@ -236,6 +260,7 @@ def collect_doctor_report(
         "ui_requested": check_ui,
         "workers_requested": check_workers,
         "worker_models_requested": selected_worker_ids,
+        "worker_env_warnings": worker_env_warnings,
         "checks": checks,
     }
 
@@ -333,6 +358,22 @@ def main() -> int:
             logging.getLogger(__name__).warning(
                 "API is binding to %s and may be reachable from other devices", host
             )
+        # Startup self-check: dedicated worker environments (Qwen3 / CosyVoice /
+        # MeloTTS) are routed through env vars set by exports/bootstrap/*/env.ps1.
+        # If one is missing the model silently falls back to in-process spawn and
+        # fails with a cryptic import/NoneType error, so warn clearly up front.
+        worker_env_warnings = collect_worker_env_warnings(
+            ModelRegistry.from_yaml(search_paths=settings.model_search_paths)
+        )
+        if worker_env_warnings:
+            print(
+                "[startup-check] Dedicated worker environment is NOT configured for "
+                f"{len(worker_env_warnings)} model(s); they will fail until you source "
+                "their env script in THIS shell before starting:",
+                file=sys.stderr,
+            )
+            for message in worker_env_warnings:
+                print(f"  - {message}", file=sys.stderr)
         app_factory = (
             "edgetts_arena.ui.gradio_app:create_full_app"
             if args.ui
@@ -346,6 +387,62 @@ def main() -> int:
             reload=args.reload,
             log_level=settings.log_level.lower(),
         )
+        return 0
+
+    if args.command == "download":
+        from edgetts_arena.core.model_downloader import (
+            download_model,
+            list_downloadable_models,
+            check_model_downloaded,
+        )
+        
+        project_root = Path.cwd()
+        search_paths = settings.model_search_paths
+        
+        # 列出可下载模型
+        if args.list_models or (not args.model and not args.download_all):
+            models = list_downloadable_models()
+            print("可下载的模型列表:")
+            print("-" * 60)
+            for m in models:
+                status = "✓ 已下载" if check_model_downloaded(m["id"], search_paths, project_root) else "○ 未下载"
+                print(f"  {m['id']:<20} {status:<10} ~{m['size_mb']}MB")
+                print(f"    {m['description']}")
+                print(f"    来源: {m['repo_id']}")
+                print()
+            print(f"搜索路径: {search_paths}")
+            return 0
+        
+        # 下载所有模型
+        if args.download_all:
+            models = list_downloadable_models()
+            results = []
+            for m in models:
+                print(f"\n正在下载 {m['id']}...")
+                def progress(p):
+                    if p.status == "downloading":
+                        print(f"  {p.message}", end="\r")
+                result = download_model(m["id"], search_paths, project_root, progress)
+                results.append(result)
+                print(f"  {result['message']}")
+            
+            success = sum(1 for r in results if r["success"])
+            print(f"\n完成: {success}/{len(results)} 个模型下载成功")
+            return 0 if success == len(results) else 1
+        
+        # 下载指定模型
+        if args.model:
+            def progress(p):
+                if p.status == "downloading":
+                    print(f"  {p.message}", end="\r")
+                elif p.status == "complete":
+                    print(f"  {p.message}")
+            
+            print(f"正在下载 {args.model}...")
+            result = download_model(args.model, search_paths, project_root, progress)
+            print(result["message"])
+            return 0 if result["success"] else 1
+        
         return 0
 
     return 2

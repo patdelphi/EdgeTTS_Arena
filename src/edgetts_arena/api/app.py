@@ -64,7 +64,7 @@ def create_app(
     exports_root: str | Path = "exports",
 ) -> FastAPI:
     settings = settings or load_settings()
-    registry = registry or ModelRegistry.from_yaml()
+    registry = registry or ModelRegistry.from_yaml(search_paths=settings.model_search_paths)
     artifact_store = RunArtifactStore(exports_root)
     resource_guard = ResourceGuard(settings.resource_guard)
     benchmark_service = BenchmarkService(
@@ -88,6 +88,17 @@ def create_app(
     app.state.benchmark_service = benchmark_service
     app.state.benchmark_preset_suite = preset_suite
     app.state.repeated_benchmark_service = repeated_benchmark_service
+
+    # Surface missing dedicated worker environments (Qwen3 / CosyVoice / MeloTTS)
+    # at startup so API-only deployments also get the actionable hint. Purely a
+    # notice: it never blocks app creation.
+    try:
+        from edgetts_arena.core.model_registry import collect_worker_env_warnings
+
+        for message in collect_worker_env_warnings(registry):
+            logger.warning("worker env not configured: %s", message)
+    except Exception:  # pragma: no cover - defensive startup notice
+        pass
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(

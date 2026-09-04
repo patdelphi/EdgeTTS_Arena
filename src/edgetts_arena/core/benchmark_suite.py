@@ -191,7 +191,10 @@ class RepeatedBenchmarkService:
                 self.registry.set_status(model_id, ModelStatus.BUSY)
                 timeout = self.inference_timeout_sec * max(1, warmup_runs + measured_runs)
                 task = {
-                    "adapter": record.spec.adapter, "model_path": record.spec.model_path, "text": case.text,
+                    "adapter": record.spec.adapter, "text": case.text,
+                    # Resolved absolute path: the isolated worker may run with a
+                    # different CWD where the raw relative model_path would not resolve.
+                    "model_path": record.spec.resolved_model_path or record.spec.model_path,
                     "num_threads": num_threads, "infer_kwargs": kwargs, "audio_path": str(path),
                     "warmup_runs": warmup_runs, "measured_runs": measured_runs,
                 }
