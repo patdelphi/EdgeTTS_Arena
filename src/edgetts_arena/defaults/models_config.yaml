@@ -26,6 +26,10 @@ models:
     num_threads: 4
     experimental: false
     language_control: true
+    # Mandarin auto-routes to a dedicated v1.1-zh model when present under
+    # <model_path>/zh (kokoro-v1.1-zh.onnx + voices-v1.1-zh.bin + config.json),
+    # phonemized by misaki[zh] so tones survive; espeak-ng 'cmn' on v1.0 strips
+    # them. Without the zh model, Chinese falls back to the v1.0 espeak path.
 
   - id: qwen3-tts-0.6b
     name: Qwen3-TTS 0.6B CustomVoice

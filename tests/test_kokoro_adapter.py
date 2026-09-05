@@ -115,3 +115,134 @@ def test_kokoro_unload(tmp_path: Path) -> None:
     assert adapter.is_loaded is False
     with pytest.raises(ModelNotLoadedError):
         adapter.infer("hello")
+
+
+class FakeZhKokoro:
+    """Stand-in for the dedicated v1.1-zh engine (distinct voice names)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_voices(self) -> list[str]:
+        return ["af_maple", "bf_vale", "zf_001", "zf_002", "zm_010"]
+
+    def create(self, phonemes: str, **kwargs: Any):
+        self.calls.append((phonemes, kwargs))
+        return np.full(4800, 0.1, dtype=np.float32), 24_000
+
+
+def _fake_g2p_factory() -> Any:
+    def _factory() -> Any:
+        def _g2p(text: str) -> tuple[str, dict[str, Any]]:
+            return ("ni3 hao2", {"raw": text})
+
+        return _g2p
+
+    return _factory
+
+
+def _zh_adapter(
+    tmp_path: Path, *, zh_factory: Any = None
+) -> tuple[KokoroTTSAdapter, FakeKokoro, FakeZhKokoro]:
+    """Adapter with a v1.0 engine plus a discovered zh model under ``tmp_path/zh``."""
+    _files(tmp_path)  # kokoro-v1.0.onnx + voices-v1.0.bin
+    v1_engine = FakeKokoro()
+    zh_engine = FakeZhKokoro()
+
+    zh_dir = tmp_path / "zh"
+    zh_dir.mkdir()
+    (zh_dir / "kokoro-v1.1-zh.onnx").write_bytes(b"zhonnx")
+    (zh_dir / "voices-v1.1-zh.bin").write_bytes(b"zhvoices")
+    (zh_dir / "config.json").write_text('{"vocab": {}}', encoding="utf-8")
+
+    def default_zh_factory(model_file, voices_file, config_file, num_threads):
+        assert Path(model_file).name == "kokoro-v1.1-zh.onnx"
+        assert Path(voices_file).name == "voices-v1.1-zh.bin"
+        assert Path(config_file).name == "config.json"
+        assert num_threads == 3
+        return zh_engine
+
+    adapter = KokoroTTSAdapter(
+        kokoro_factory=lambda *_args: v1_engine,
+        runtime_version="test-runtime",
+        zh_kokoro_factory=zh_factory or default_zh_factory,
+        zh_g2p_factory=_fake_g2p_factory(),
+    )
+    adapter.load_model(str(tmp_path), num_threads=3)
+    return adapter, v1_engine, zh_engine
+
+
+def test_kokoro_discovers_zh_model_beside_v1(tmp_path: Path) -> None:
+    adapter, _, _ = _zh_adapter(tmp_path)
+    assert adapter._zh_available is True
+    assert adapter._zh_model_path is not None
+    assert adapter._zh_model_path.name == "kokoro-v1.1-zh.onnx"
+
+
+def test_kokoro_chinese_routes_to_zh_model(tmp_path: Path) -> None:
+    adapter, v1_engine, zh_engine = _zh_adapter(tmp_path)
+    output = adapter.infer("你好，世界。")
+
+    assert output.metadata["model_version"] == "v1.1-zh"
+    assert output.metadata["phonemizer"] == "misaki-zh"
+    assert output.metadata["language"] == "cmn"
+    assert output.metadata["voice"] == "zf_001"
+    # Phonemes (not raw text) are fed with is_phonemes so tones bypass espeak-ng.
+    assert zh_engine.calls[-1][0] == "ni3 hao2"
+    assert zh_engine.calls[-1][1]["is_phonemes"] is True
+    assert zh_engine.calls[-1][1]["voice"] == "zf_001"
+    assert v1_engine.calls == []
+
+
+def test_kokoro_chinese_explicit_zh_voice_honoured(tmp_path: Path) -> None:
+    adapter, _, zh_engine = _zh_adapter(tmp_path)
+    output = adapter.infer("你好", voice="zf_002")
+    assert output.metadata["voice"] == "zf_002"
+    assert output.metadata["model_version"] == "v1.1-zh"
+    assert zh_engine.calls[-1][1]["voice"] == "zf_002"
+
+
+def test_kokoro_chinese_explicit_v1_voice_stays_on_v1(tmp_path: Path) -> None:
+    adapter, v1_engine, zh_engine = _zh_adapter(tmp_path)
+    output = adapter.infer("你好", voice="zf_xiaoxiao", language="cmn")
+    assert output.metadata["model_version"] == "v1.0"
+    assert v1_engine.calls[-1][1]["lang"] == "cmn"
+    assert zh_engine.calls == []
+
+
+def test_kokoro_chinese_falls_back_when_zh_load_fails(tmp_path: Path) -> None:
+    def boom(*_args: Any) -> Any:
+        raise RuntimeError("zh session failed")
+
+    adapter, v1_engine, _ = _zh_adapter(tmp_path, zh_factory=boom)
+    output = adapter.infer("你好")
+    assert adapter._zh_load_failed is True
+    assert output.metadata["model_version"] == "v1.0"
+    assert v1_engine.calls[-1][1]["lang"] == "cmn"
+
+
+def test_kokoro_zh_disabled_without_config(tmp_path: Path) -> None:
+    # Only onnx + voices, no config.json -> zh path disabled, Chinese uses v1.0.
+    _files(tmp_path)
+    zh_dir = tmp_path / "zh"
+    zh_dir.mkdir()
+    (zh_dir / "kokoro-v1.1-zh.onnx").write_bytes(b"zhonnx")
+    (zh_dir / "voices-v1.1-zh.bin").write_bytes(b"zhvoices")
+    v1_engine = FakeKokoro()
+    adapter = KokoroTTSAdapter(
+        kokoro_factory=lambda *_args: v1_engine, runtime_version="test-runtime"
+    )
+    adapter.load_model(str(tmp_path), num_threads=3)
+    assert adapter._zh_available is False
+    output = adapter.infer("你好")
+    assert output.metadata["model_version"] == "v1.0"
+
+
+def test_zh_g2p_keeps_mandarin_tones() -> None:
+    # Root-cause guard: misaki ZHG2P emits tone digits, which the v1.1-zh vocab
+    # contains but espeak-ng 'cmn' + the v1.0 vocab silently dropped.
+    pytest.importorskip("misaki")
+    from misaki import zh
+
+    phonemes, _ = zh.ZHG2P(version="1.1")("你好")
+    assert any(tone in phonemes for tone in "12345")

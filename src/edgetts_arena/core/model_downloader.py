@@ -39,6 +39,20 @@ MODEL_SOURCES: dict[str, dict[str, Any]] = {
         "description": "Kokoro TTS ONNX v1.0 (Apache-2.0)",
         "size_mb": 660,
     },
+    "kokoro-zh": {
+        "type": "huggingface",
+        # GitHub releases are unreachable behind some networks; this HF mirror
+        # carries the same thewh1teagle v1.1-zh export (onnx + packed voices +
+        # vocab config) that kokoro-onnx consumes for Mandarin.
+        "repo_id": "xun/kokoro-v1.1-zh-onnx",
+        "files": [
+            {"source": "onnx/kokoro-v1.1-zh.onnx", "target": "kokoro-v1.1-zh.onnx"},
+            {"source": "onnx/voices-v1.1-zh.bin", "target": "voices-v1.1-zh.bin"},
+            {"source": "onnx/config.json", "target": "config.json"},
+        ],
+        "description": "Kokoro v1.1-zh 中文专用模型 (配合 misaki[zh] ZHG2P, Apache-2.0)",
+        "size_mb": 400,
+    },
     "qwen3-tts-0.6b": {
         "type": "huggingface",
         "repo_id": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
@@ -133,6 +147,8 @@ def resolve_download_path(
         return base_path / "piper"
     elif model_id == "kokoro":
         return base_path / "kokoro"
+    elif model_id == "kokoro-zh":
+        return base_path / "kokoro" / "zh"
     elif model_id == "qwen3-tts-0.6b":
         return base_path / "qwen3" / "Qwen3-TTS-12Hz-0.6B-CustomVoice"
     elif model_id == "cosyvoice-300m-sft":
