@@ -60,6 +60,15 @@ def build_arena_ui(
     default_models = usable_model_ids(initial_models)[:2] or usable_model_ids(initial_models)[:1]
     initial_caps = capability_view(initial_models, default_models)
 
+    # Residency policy is shared app-wide; the UI reads/updates it through the
+    # manager attached to the benchmark service (None when wired without one).
+    residency = getattr(benchmark_service, "residency", None)
+    initial_residency = residency.snapshot() if residency is not None else {
+        "mode": "eager", "memory_aware": True, "resident_memory_budget_mb": 4096,
+        "resident_footprint_mb": 0.0, "available_memory_mb": 0.0,
+        "residents": [], "recent_evictions": [],
+    }
+
     with gr.Blocks(title="EdgeTTS-Arena") as demo:
         model_state = gr.State(initial_models)
         run_state = gr.State(None)
@@ -195,35 +204,32 @@ def build_arena_ui(
                     rows.append([m["id"], m["description"], f"~{m['size_mb']}MB", m["repo_id"], status])
                 return rows
 
-            with gr.Row():
-                with gr.Column(scale=3):
-                    download_table = gr.Dataframe(
-                        _get_download_status(),
-                        headers=["模型ID", "描述", "大小", "来源", "状态"],
-                        type="array",
-                        interactive=False,
-                        label="可下载模型列表",
-                        wrap=True,
-                    )
-                    refresh_status_btn = gr.Button("🔄 刷新状态", size="sm")
-                
-                with gr.Column(scale=2):
-                    gr.Markdown("### 下载操作")
-                    download_model_input = gr.Dropdown(
-                        [m["id"] for m in downloadable],
-                        label="选择要下载的模型",
-                        info="从上方列表中选择模型ID",
-                    )
-                    with gr.Row():
-                        download_btn = gr.Button("⬇️ 下载选中模型", variant="primary", size="lg")
-                    with gr.Row():
-                        download_all_btn = gr.Button("📥 下载全部模型", size="lg")
-                    
-                    gr.Markdown("---")
-                    gr.Markdown(
-                        f"**📁 搜索路径优先级:**\n\n"
-                        + "\n".join(f"{i+1}. `{p}`" for i, p in enumerate(_search_paths))
-                    )
+            # 可下载模型列表：占满整个标签页宽度
+            download_table = gr.Dataframe(
+                _get_download_status(),
+                headers=["模型ID", "描述", "大小", "来源", "状态"],
+                type="array",
+                interactive=False,
+                label="可下载模型列表",
+                wrap=True,
+            )
+
+            # 下载操作区：整行横向工具栏，按重要性分配宽度
+            with gr.Row(equal_height=True):
+                download_model_input = gr.Dropdown(
+                    [m["id"] for m in downloadable],
+                    label="选择要下载的模型",
+                    info="从上方列表中选择模型ID",
+                    scale=4,
+                )
+                download_btn = gr.Button("⬇️ 下载选中模型", variant="primary", size="lg", scale=2)
+                download_all_btn = gr.Button("📥 下载全部模型", size="lg", scale=2)
+                refresh_status_btn = gr.Button("🔄 刷新状态", size="lg", scale=1)
+
+            gr.Markdown(
+                f"**📁 搜索路径优先级:** "
+                + " | ".join(f"`{p}`" for p in _search_paths)
+            )
 
             # 下载状态输出 - 使用更大的区域
             gr.Markdown("### 📊 下载状态")
@@ -232,6 +238,29 @@ def build_arena_ui(
                 "> 💡 **提示**: 首次下载可能需要较长时间，请耐心等待。",
                 elem_classes=["download-status-box"],
             )
+
+        with gr.Tab("驻留策略"):
+            gr.Markdown(
+                "## 模型驻留（load/unload）策略\n\n"
+                "控制运行结束后模型是否保持加载，以及在内存允许时同时常驻多少个模型。"
+            )
+            residency_mode = gr.Radio(
+                [("每次运行后卸载 (eager)", "eager"), ("保留最近一批常驻 (keep_warm)", "keep_warm")],
+                value=initial_residency["mode"], label="卸载策略",
+                info="keep_warm：保留上一次运行选中的模型常驻，直到下次运行不再选择它才卸载（避免重复冷启动）。",
+            )
+            residency_memory_aware = gr.Checkbox(
+                value=bool(initial_residency["memory_aware"]),
+                label="内存感知常驻（根据可用内存决定能同时常驻多少个模型）",
+            )
+            residency_budget = gr.Slider(
+                256, 65536, value=int(initial_residency["resident_memory_budget_mb"]),
+                step=256, label="常驻内存预算 (MB)",
+            )
+            with gr.Row():
+                apply_residency_btn = gr.Button("应用驻留策略", variant="primary")
+                refresh_residency_btn = gr.Button("刷新状态")
+            residency_summary = gr.Markdown(_residency_summary(initial_residency))
 
         def refresh_runtime() -> tuple[Any, ...]:
             current = registry.list_models()
@@ -428,6 +457,22 @@ def build_arena_ui(
         def refresh_download_status() -> list[list[Any]]:
             return _get_download_status()
 
+        def apply_residency(mode_value: str, mem_aware: bool, budget: int | float) -> str:
+            if residency is None:
+                return _residency_summary(None)
+            from edgetts_arena.core.config import ResidencySettings
+            snapshot = residency.configure(
+                ResidencySettings(
+                    mode=mode_value or "eager",
+                    memory_aware=bool(mem_aware),
+                    resident_memory_budget_mb=int(budget),
+                )
+            )
+            return _residency_summary(snapshot)
+
+        def refresh_residency() -> str:
+            return _residency_summary(residency.snapshot() if residency is not None else None)
+
         refresh_outputs = [
             model_state, models, suite_models, status, system, speed, seed, voice, language, cap_summary,
         ]
@@ -463,6 +508,13 @@ def build_arena_ui(
         download_all_btn.click(download_all_models, outputs=[download_output, download_table])
         refresh_status_btn.click(refresh_download_status, outputs=download_table)
 
+        apply_residency_btn.click(
+            apply_residency,
+            [residency_mode, residency_memory_aware, residency_budget],
+            residency_summary,
+        )
+        refresh_residency_btn.click(refresh_residency, outputs=residency_summary)
+
     return demo
 
 
@@ -486,6 +538,34 @@ def _result_audio_path(result: dict[str, Any], run_id: str, store: RunArtifactSt
     if result.get("status") != "success" or not result.get("audio_url"):
         return None
     return str(store.get_audio_file(run_id, str(result["audio_url"]).rsplit("/", 1)[-1]))
+
+
+def _residency_summary(snap):
+    if not snap:
+        return "_驻留策略不可用（服务未启用 ResidencyManager）。_"
+    if snap.get("mode") == "keep_warm":
+        mode_label = "保留最近一批常驻 (keep_warm)"
+    else:
+        mode_label = "每次运行后卸载 (eager)"
+    aware = "开启" if snap.get("memory_aware") else "关闭"
+    lines = [
+        "**卸载策略**: " + str(mode_label),
+        "**内存感知常驻**: " + str(aware),
+        "**常驻内存预算**: " + str(snap.get("resident_memory_budget_mb")) + " MB",
+        "**当前常驻占用**: " + str(snap.get("resident_footprint_mb")) + " MB · **可用内存**: " + str(snap.get("available_memory_mb")) + " MB",
+    ]
+    residents = snap.get("residents") or []
+    if residents:
+        lines.append("\n**常驻模型:**")
+        for item in residents:
+            kind = "独立worker" if item.get("kind") == "worker" else "进程内"
+            lines.append("- `" + str(item.get("model_id")) + "` · " + str(kind) + " · " + str(item.get("footprint_mb")) + " MB · 代际 " + str(item.get("generation")))
+    else:
+        lines.append("\n**常驻模型:** _无_")
+    evictions = snap.get("recent_evictions") or []
+    if evictions:
+        lines.append("\n**最近驱逐:** " + ", ".join("`" + str(e) + "`" for e in evictions[-8:]))
+    return "\n".join(lines)
 
 
 def _system_markdown() -> str:

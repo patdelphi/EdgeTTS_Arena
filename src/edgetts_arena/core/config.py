@@ -21,6 +21,28 @@ class ResourceGuardSettings:
     max_concurrent_models: int = 4
 
 
+# 模型驻留/卸载策略。
+# mode:
+#   eager     - 每次运行后卸载本次加载的模型（默认，最省内存，行为与旧版一致）
+#   keep_warm - 保留最近一批选中的模型常驻，直到下次运行不再选择它才卸载，
+#               省去重复冷启动（重模型冷启动可达数十秒）
+# memory_aware:
+#   True 时按可用内存与 resident_memory_budget_mb 自动决定能常驻多少个模型，
+#   超出预算则按最久未用（LRU）驱逐。
+_RESIDENCY_MODES = ("eager", "keep_warm")
+
+
+@dataclass(frozen=True, slots=True)
+class ResidencySettings:
+    mode: str = "eager"
+    memory_aware: bool = True
+    resident_memory_budget_mb: int = 4096
+
+    @property
+    def keep_warm(self) -> bool:
+        return self.mode == "keep_warm"
+
+
 @dataclass(frozen=True, slots=True)
 class AppSettings:
     host: str = "127.0.0.1"
@@ -29,6 +51,7 @@ class AppSettings:
     default_num_threads: int = 4
     inference_timeout_sec: int = 60
     resource_guard: ResourceGuardSettings = ResourceGuardSettings()
+    residency: ResidencySettings = ResidencySettings()
     # 模型搜索路径（按优先级顺序），支持环境变量展开
     model_search_paths: tuple[str, ...] = (
         "${HF_HOME:-~/.cache}/huggingface/hub",
@@ -58,6 +81,13 @@ def _resolve_search_paths(paths: list[str], project_root: Path) -> tuple[str, ..
             path = project_root / path
         resolved.append(str(path.resolve()))
     return tuple(resolved)
+
+
+def _as_bool(env_value: str | None, fallback: Any) -> bool:
+    """Parse a bool from an env override (when present) else the YAML/default value."""
+    if env_value is None or str(env_value).strip() == "":
+        return bool(fallback)
+    return str(env_value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -95,6 +125,28 @@ def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
         ),
     )
     
+    residency_raw = raw.get("residency", {}) or {}
+    residency_mode = str(
+        os.getenv("EDGETTS_ARENA_RESIDENCY_MODE", residency_raw.get("mode", "eager"))
+    ).strip().lower()
+    if residency_mode not in _RESIDENCY_MODES:
+        raise ValueError(
+            f"residency.mode must be one of {_RESIDENCY_MODES}, got '{residency_mode}'"
+        )
+    residency = ResidencySettings(
+        mode=residency_mode,
+        memory_aware=_as_bool(
+            os.getenv("EDGETTS_ARENA_RESIDENCY_MEMORY_AWARE"),
+            residency_raw.get("memory_aware", True),
+        ),
+        resident_memory_budget_mb=int(
+            os.getenv(
+                "EDGETTS_ARENA_RESIDENT_MEMORY_BUDGET_MB",
+                residency_raw.get("resident_memory_budget_mb", 4096),
+            )
+        ),
+    )
+
     # 解析模型搜索路径
     project_root = config_path.parent.parent if config_path.exists() else Path.cwd()
     search_paths_raw = raw.get("model_search_paths") or [
@@ -112,5 +164,6 @@ def load_settings(path: str | Path = _DEFAULT_APP_CONFIG) -> AppSettings:
             os.getenv("EDGETTS_ARENA_INFERENCE_TIMEOUT_SEC", raw.get("inference_timeout_sec", 60))
         ),
         resource_guard=guard,
+        residency=residency,
         model_search_paths=search_paths,
     )

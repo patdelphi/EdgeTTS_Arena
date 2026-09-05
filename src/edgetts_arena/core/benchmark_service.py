@@ -10,7 +10,9 @@ from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.errors import ArenaError
 from edgetts_arena.core.metrics_collector import MetricsCollector
 from edgetts_arena.core.model_registry import ModelRegistry, ModelSpec, ModelStatus
+from edgetts_arena.core.persistent_worker import WarmWorkerError
 from edgetts_arena.core.process_runner import ProcessRunner, ProcessTimeoutError
+from edgetts_arena.core.residency import ResidencyManager
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.system_info import collect_system_environment
 from edgetts_arena.core.worker_runtime import run_isolated_model
@@ -41,6 +43,7 @@ class BenchmarkService:
         process_runner: ProcessRunner | None = None,
         inference_timeout_sec: float = 60.0,
         isolate_model_processes: bool = True,
+        residency: ResidencyManager | None = None,
     ) -> None:
         self.registry = registry
         self.resource_guard = resource_guard
@@ -52,6 +55,7 @@ class BenchmarkService:
             else (ProcessRunner() if isolate_model_processes else None)
         )
         self.inference_timeout_sec = float(inference_timeout_sec)
+        self.residency = residency
         self._artifact_lock = Lock()
 
     def run(
@@ -108,8 +112,14 @@ class BenchmarkService:
         environment["execution_plan"] = plan.to_dict()
         self.artifact_store.create_run(run_id)
 
+        # Generational eviction: drop models kept warm by a previous run that this
+        # run does not select, before loading anything new.
+        residency_evicted: list[str] = []
+        if self.residency is not None and self.residency.keep_warm:
+            residency_evicted = self.residency.begin_run(list(model_ids))
+
         def snapshot(results: list[dict[str, Any]], complete: bool) -> dict[str, Any]:
-            return {
+            payload = {
                 "run_id": run_id,
                 "started_at": iso_utc(started_at),
                 "completed_at": iso_utc(utc_now()) if complete else None,
@@ -121,6 +131,9 @@ class BenchmarkService:
                 "resource_warnings": list(plan.warnings),
                 "results": results,
             }
+            if self.residency is not None:
+                payload["residency"] = self.residency.snapshot()
+            return payload
 
         aligned: list[dict[str, Any] | None] = [None] * len(model_ids)
         if execution_mode == "sequential":
@@ -157,6 +170,18 @@ class BenchmarkService:
                     aligned[futures[future]] = future.result()
                     yield snapshot([item for item in aligned if item is not None], False), False
 
+        # Keep-warm bookkeeping: trim residents beyond the memory budget, then record
+        # the residency state (and what was evicted) into the run environment.
+        residency_trimmed: list[str] = []
+        if self.residency is not None and self.residency.keep_warm:
+            residency_trimmed = self.residency.end_run(list(model_ids))
+        if self.residency is not None:
+            environment["residency"] = {
+                **self.residency.snapshot(),
+                "evicted_not_selected": residency_evicted,
+                "evicted_over_budget": residency_trimmed,
+            }
+
         data = snapshot([item for item in aligned if item is not None], True)
         self.artifact_store.write_json(run_id, "environment.json", environment)
         self.artifact_store.write_json(
@@ -192,6 +217,8 @@ class BenchmarkService:
         record = None
         loaded_for_run = False
         isolated_run = False
+        warm_run = False
+        metrics = None
         try:
             record = self.registry.get_record(model_id)
             info = self.registry.model_info(model_id)
@@ -210,7 +237,69 @@ class BenchmarkService:
             filename = self.artifact_store.safe_model_filename(model_id)
             path = self.artifact_store.audio_output_path(run_id, filename)
 
-            if self.process_runner is not None and not record.spec.keep_in_memory:
+            route = self._execution_route(record.spec, self.process_runner, self.residency)
+
+            if route == "warm_worker":
+                # Keep-warm: reuse (or start) a dedicated persistent worker so a
+                # heavy model stays loaded across runs instead of a one-shot spawn.
+                assert self.residency is not None
+                warm_run = True
+                self.registry.set_status(model_id, ModelStatus.BUSY)
+                load_timeout = max(
+                    60.0, min(float(record.spec.timeout_base_sec or timeout_sec), 900.0)
+                )
+                worker = None
+                process_result = None
+                try:
+                    worker = self.residency.acquire_worker(record.spec, timeout_sec=load_timeout)
+                    process_result = worker.submit_infer(
+                        text=text,
+                        infer_kwargs=infer_kwargs,
+                        audio_path=str(path),
+                        timeout_sec=timeout_sec,
+                    )
+                except ProcessTimeoutError as exc:
+                    self.residency.evict(model_id)
+                    warm_run = False
+                    path.unlink(missing_ok=True)
+                    return {
+                        "model_id": model_id,
+                        "status": "error",
+                        "audio_url": None,
+                        "metrics": None,
+                        "warnings": warnings,
+                        "error": {
+                            "code": 3001,
+                            "type": "inference_timeout",
+                            "message": f"model inference exceeded {timeout_sec:.3f}s hard timeout",
+                        },
+                        "metadata": None,
+                        "worker": exc.diagnostics(),
+                    }
+                except WarmWorkerError as exc:
+                    # Could not start/reuse a warm worker; fall back to the one-shot
+                    # isolated runner so the model still executes this run.
+                    warnings.append(
+                        f"{model_id}: warm worker unavailable ({exc}); falling back to isolated run"
+                    )
+                    self.residency.evict(model_id)
+                    warm_run = False
+                    route = "isolated"
+                if process_result is not None:
+                    self.residency.mark_worker_used(
+                        model_id, footprint_mb=worker.rss_mb() if worker is not None else None
+                    )
+                    return self._worker_response(
+                        run_id=run_id,
+                        model_id=model_id,
+                        filename=filename,
+                        config=config,
+                        warnings=warnings,
+                        path=path,
+                        process_result=process_result,
+                    )
+
+            if route == "isolated":
                 isolated_run = True
                 self.registry.set_status(model_id, ModelStatus.BUSY)
                 task = {
@@ -253,49 +342,15 @@ class BenchmarkService:
                         "metadata": None,
                         "worker": exc.diagnostics(),
                     }
-                if process_result.status != "success":
-                    path.unlink(missing_ok=True)
-                    return {
-                        "model_id": model_id,
-                        "status": "error",
-                        "audio_url": None,
-                        "metrics": None,
-                        "warnings": warnings,
-                        "error": {
-                            "code": 3002,
-                            "type": "worker_exited",
-                            "message": process_result.error_message or "isolated worker exited unexpectedly",
-                            "exit_code": process_result.exit_code,
-                        },
-                        "metadata": None,
-                        "worker": process_result.diagnostics(),
-                    }
-                payload = dict(process_result.value or {})
-                if payload.get("status") != "success":
-                    path.unlink(missing_ok=True)
-                    return {
-                        "model_id": model_id,
-                        "status": "error",
-                        "audio_url": None,
-                        "metrics": None,
-                        "warnings": warnings,
-                        "error": payload.get("error") or {
-                            "code": 3002, "type": "worker_error", "message": "isolated worker failed"
-                        },
-                        "metadata": payload.get("metadata"),
-                        "worker": process_result.diagnostics(),
-                    }
-                return {
-                    "model_id": model_id,
-                    "status": "success",
-                    "audio_url": f"/api/v1/audio/download/{run_id}/{filename}",
-                    "metrics": payload.get("metrics"),
-                    "config": config,
-                    "warnings": warnings,
-                    "error": None,
-                    "metadata": payload.get("metadata"),
-                    "worker": process_result.diagnostics(),
-                }
+                return self._worker_response(
+                    run_id=run_id,
+                    model_id=model_id,
+                    filename=filename,
+                    config=config,
+                    warnings=warnings,
+                    path=path,
+                    process_result=process_result,
+                )
 
             if self.process_runner is not None and record.spec.keep_in_memory:
                 warnings.append(
@@ -332,16 +387,125 @@ class BenchmarkService:
                 "worker": None,
             }
         finally:
-            if record is not None and isolated_run:
+            if record is None:
+                pass
+            elif isolated_run:
                 self.registry.set_status(model_id, ModelStatus.UNLOADED)
-            elif record is not None and loaded_for_run:
+            elif warm_run:
+                # Kept warm in a dedicated subprocess; mirror residency in the registry.
+                live = self.residency is not None and self.residency.worker_for(model_id) is not None
+                self.registry.set_status(
+                    model_id, ModelStatus.READY if live else ModelStatus.UNLOADED
+                )
+            elif loaded_for_run:
                 try:
-                    if record.spec.keep_in_memory:
+                    if (
+                        self.residency is not None
+                        and self.residency.keep_warm
+                        and not record.spec.keep_in_memory
+                    ):
+                        footprint = metrics.rss_delta_mb if metrics is not None else None
+                        admission = self.residency.admit_in_process(record.spec, footprint_mb=footprint)
+                        if admission.allowed:
+                            self.registry.set_status(model_id, ModelStatus.READY)
+                            self.residency.mark_in_process(model_id, footprint or 0.0)
+                        else:
+                            warnings.append(f"{model_id}: not kept resident ({admission.reason})")
+                            self.registry.unload(model_id)
+                    elif record.spec.keep_in_memory:
                         self.registry.set_status(model_id, ModelStatus.READY)
                     else:
                         self.registry.unload(model_id)
                 except Exception:
                     self.registry.set_status(model_id, ModelStatus.ERROR, error="cleanup failed")
+
+    @staticmethod
+    def _execution_route(spec: ModelSpec, process_runner: Any, residency: Any) -> str:
+        """Pick how ``spec`` runs this invocation.
+
+        ``in_process``  - adapter lives in the main process (keep_in_memory models,
+                          no process isolation, or light models kept warm).
+        ``isolated``    - one-shot subprocess (default when isolation is on).
+        ``warm_worker`` - persistent dedicated subprocess reused across runs
+                          (keep_warm + a dedicated interpreter resolves).
+
+        Eager mode reproduces the historical rule exactly: isolated whenever a
+        process_runner exists and the model is not keep_in_memory. Shared by
+        :class:`BenchmarkService` and :class:`RepeatedBenchmarkService`.
+        """
+        if spec.keep_in_memory or process_runner is None:
+            return "in_process"
+        warm = residency is not None and residency.keep_warm
+        if not warm:
+            return "isolated"
+        if spec.resolve_worker_python():
+            return "warm_worker"
+        # Declares a dedicated worker but its interpreter is not configured: stay
+        # isolated rather than importing a heavy runtime into the main process.
+        if spec.worker_python.strip() or spec.worker_python_env.strip():
+            return "isolated"
+        return "in_process"
+
+    def _worker_response(
+        self,
+        *,
+        run_id: str,
+        model_id: str,
+        filename: str,
+        config: dict[str, Any],
+        warnings: list[str],
+        path: Any,
+        process_result: Any,
+    ) -> dict[str, Any]:
+        """Convert a worker ``ProcessResult`` (one-shot or warm) into a run response.
+
+        Transport success is ``process_result.status``; the application-level status
+        lives in ``process_result.value["status"]`` for both runner kinds, so the
+        isolated and warm paths share this mapping unchanged.
+        """
+        if process_result.status != "success":
+            path.unlink(missing_ok=True)
+            return {
+                "model_id": model_id,
+                "status": "error",
+                "audio_url": None,
+                "metrics": None,
+                "warnings": warnings,
+                "error": {
+                    "code": 3002,
+                    "type": "worker_exited",
+                    "message": process_result.error_message or "isolated worker exited unexpectedly",
+                    "exit_code": process_result.exit_code,
+                },
+                "metadata": None,
+                "worker": process_result.diagnostics(),
+            }
+        payload = dict(process_result.value or {})
+        if payload.get("status") != "success":
+            path.unlink(missing_ok=True)
+            return {
+                "model_id": model_id,
+                "status": "error",
+                "audio_url": None,
+                "metrics": None,
+                "warnings": warnings,
+                "error": payload.get("error") or {
+                    "code": 3002, "type": "worker_error", "message": "isolated worker failed"
+                },
+                "metadata": payload.get("metadata"),
+                "worker": process_result.diagnostics(),
+            }
+        return {
+            "model_id": model_id,
+            "status": "success",
+            "audio_url": f"/api/v1/audio/download/{run_id}/{filename}",
+            "metrics": payload.get("metrics"),
+            "config": config,
+            "warnings": warnings,
+            "error": None,
+            "metadata": payload.get("metadata"),
+            "worker": process_result.diagnostics(),
+        }
 
     @staticmethod
     def _resolve_timeout_sec(spec: ModelSpec, text: str, global_default: float) -> float:

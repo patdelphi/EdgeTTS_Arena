@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -13,13 +14,14 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
-from edgetts_arena.api.schemas import APIEnvelope, BenchmarkRunRequest, BenchmarkSuiteRunRequest, StreamingStart
+from edgetts_arena.api.schemas import APIEnvelope, BenchmarkRunRequest, BenchmarkSuiteRunRequest, ResidencyConfigRequest, StreamingStart
 from edgetts_arena.core.artifacts import RunArtifactStore
 from edgetts_arena.core.benchmark_service import BenchmarkService
 from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBenchmarkService
-from edgetts_arena.core.config import AppSettings, load_settings
+from edgetts_arena.core.config import AppSettings, ResidencySettings, load_settings
 from edgetts_arena.core.errors import ArenaError
 from edgetts_arena.core.model_registry import ModelRegistry, ModelStatus
+from edgetts_arena.core.residency import ResidencyManager
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.system_info import collect_system_environment
 
@@ -67,24 +69,39 @@ def create_app(
     registry = registry or ModelRegistry.from_yaml(search_paths=settings.model_search_paths)
     artifact_store = RunArtifactStore(exports_root)
     resource_guard = ResourceGuard(settings.resource_guard)
+    # Residency policy (keep-warm vs eager) shared by both run services and the WS
+    # path; in eager mode it is inert and reproduces the historical load/unload rule.
+    residency = ResidencyManager(registry, settings.residency, resource_guard)
     benchmark_service = BenchmarkService(
-        registry, resource_guard, artifact_store, inference_timeout_sec=settings.inference_timeout_sec
+        registry, resource_guard, artifact_store,
+        inference_timeout_sec=settings.inference_timeout_sec, residency=residency,
     )
     preset_suite = BenchmarkPresetSuite.load()
     repeated_benchmark_service = RepeatedBenchmarkService(
         registry, resource_guard, artifact_store, preset_suite=preset_suite,
-        inference_timeout_sec=settings.inference_timeout_sec,
+        inference_timeout_sec=settings.inference_timeout_sec, residency=residency,
     )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Iterator[None]:
+        yield
+        # Shutdown: release warm workers so no orphan subprocesses linger.
+        try:
+            residency.evict_all()
+        except Exception:  # pragma: no cover - defensive cleanup
+            logger.exception("residency cleanup failed")
 
     app = FastAPI(
         title="EdgeTTS-Arena API",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
     app.state.settings = settings
     app.state.registry = registry
     app.state.artifact_store = artifact_store
+    app.state.residency = residency
     app.state.benchmark_service = benchmark_service
     app.state.benchmark_preset_suite = preset_suite
     app.state.repeated_benchmark_service = repeated_benchmark_service
@@ -176,6 +193,24 @@ def create_app(
             config=payload.config.model_dump(),
         )
         return _success(data)
+
+    @app.get("/api/v1/residency", response_model=APIEnvelope)
+    async def get_residency() -> dict[str, Any]:
+        """Current residency policy + live warm-resident snapshot (for the UI)."""
+        return _success(residency.snapshot())
+
+    @app.put("/api/v1/residency", response_model=APIEnvelope)
+    async def put_residency(payload: ResidencyConfigRequest) -> dict[str, Any]:
+        """Apply a new residency policy at runtime; returns the resulting snapshot."""
+        snapshot = await asyncio.to_thread(
+            residency.configure,
+            ResidencySettings(
+                mode=payload.mode,
+                memory_aware=payload.memory_aware,
+                resident_memory_budget_mb=payload.resident_memory_budget_mb,
+            ),
+        )
+        return _success(snapshot)
 
     @app.get("/api/v1/audio/download/{run_id}/{filename}")
     async def audio_download(run_id: str, filename: str) -> FileResponse:
@@ -289,7 +324,16 @@ def create_app(
                     "chunks": chunk_idx,
                 }
             )
-            if record.spec.keep_in_memory:
+            if residency.keep_warm and not record.spec.keep_in_memory:
+                # Keep-warm: the WS path loaded this model in-process; keep it
+                # resident when the memory budget allows, else release it.
+                admission = residency.admit_in_process(record.spec)
+                if admission.allowed:
+                    registry.set_status(model_id, ModelStatus.READY)
+                    residency.mark_in_process(model_id, 0.0)
+                else:
+                    await asyncio.to_thread(registry.unload, model_id)
+            elif record.spec.keep_in_memory:
                 registry.set_status(model_id, ModelStatus.READY)
             else:
                 await asyncio.to_thread(registry.unload, model_id)

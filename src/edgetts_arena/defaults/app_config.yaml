@@ -17,3 +17,13 @@ resource_guard:
   min_available_memory_mb_hard: 768
   min_available_memory_mb_per_concurrent_model: 512
   max_concurrent_models: 4
+
+# 模型驻留/卸载策略
+# mode: eager=每次运行后卸载(默认，最省内存); keep_warm=保留最近一批选中的模型常驻，
+#       直到下次运行不再选择它才卸载(省去重模型重复冷启动)
+# memory_aware: 常驻时按可用内存与预算自动决定保留数量，超限按最久未用驱逐
+# resident_memory_budget_mb: 常驻模型合计 footprint 的内存预算上限
+residency:
+  mode: eager
+  memory_aware: true
+  resident_memory_budget_mb: 4096

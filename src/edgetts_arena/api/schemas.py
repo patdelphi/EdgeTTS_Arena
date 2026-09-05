@@ -95,6 +95,20 @@ class BenchmarkSuiteRunRequest(BaseModel):
         return normalized
 
 
+class ResidencyConfigRequest(BaseModel):
+    """Runtime residency policy controlled from the UI.
+
+    ``mode`` selects the unload strategy (``eager`` = unload after every run;
+    ``keep_warm`` = keep the last batch resident until a later run drops it).
+    ``memory_aware`` gates multi-model residency on available memory, and
+    ``resident_memory_budget_mb`` caps the combined footprint of warm models.
+    """
+
+    mode: Literal["eager", "keep_warm"] = "eager"
+    memory_aware: bool = True
+    resident_memory_budget_mb: int = Field(default=4096, ge=256, le=262144)
+
+
 class StreamingStart(BaseModel):
     action: Literal["start"]
     text: str = Field(min_length=1, max_length=1000)

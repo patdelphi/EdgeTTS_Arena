@@ -12,6 +12,7 @@ from edgetts_arena.core.benchmark_suite import BenchmarkPresetSuite, RepeatedBen
 from edgetts_arena.core.config import load_settings
 from edgetts_arena.core.model_registry import ModelRegistry, collect_worker_env_warnings
 from edgetts_arena.core.process_runner import ProcessRunner
+from edgetts_arena.core.residency import ResidencyManager
 from edgetts_arena.core.resource_guard import ResourceGuard
 from edgetts_arena.core.logging import configure_logging
 from edgetts_arena.utils import write_wav
@@ -118,7 +119,7 @@ def collect_doctor_report(
     selected_worker_ids = list(dict.fromkeys(worker_model_ids or []))
     check_workers = bool(check_workers or selected_worker_ids)
 
-    py_ok = (3, 10) <= sys.version_info[:2] < (3, 13)
+    py_ok = (3, 10) <= sys.version_info[:2] < (3, 14)
     record("python", py_ok, platform.python_version())
 
     try:
@@ -322,27 +323,36 @@ def main() -> int:
     if args.command == "suite":
         registry = ModelRegistry.from_yaml()
         store = RunArtifactStore(args.exports_root)
+        guard = ResourceGuard(settings.resource_guard)
+        # Keep-warm lets a heavy model load once and be reused across every case in
+        # this suite (eager mode re-spawns a worker per case). evict_all on exit so
+        # no warm subprocess outlives the CLI run.
+        residency = ResidencyManager(registry, settings.residency, guard)
         service = RepeatedBenchmarkService(
             registry,
-            ResourceGuard(settings.resource_guard),
+            guard,
             store,
             preset_suite=BenchmarkPresetSuite.load(),
             inference_timeout_sec=settings.inference_timeout_sec,
+            residency=residency,
         )
-        data = service.run_suite(
-            model_ids=list(args.models),
-            case_ids=None if args.cases is None else list(args.cases),
-            cpu_threads_per_model=args.threads,
-            warmup_runs=args.warmup_runs,
-            measured_runs=args.measured_runs,
-            config={
-                "speed": 1.0,
-                "voice": None,
-                "language": None if args.language is None else args.language.strip().lower(),
-                "seed": None,
-                "sample_rate": None,
-            },
-        )
+        try:
+            data = service.run_suite(
+                model_ids=list(args.models),
+                case_ids=None if args.cases is None else list(args.cases),
+                cpu_threads_per_model=args.threads,
+                warmup_runs=args.warmup_runs,
+                measured_runs=args.measured_runs,
+                config={
+                    "speed": 1.0,
+                    "voice": None,
+                    "language": None if args.language is None else args.language.strip().lower(),
+                    "seed": None,
+                    "sample_rate": None,
+                },
+            )
+        finally:
+            residency.evict_all()
         export_path = store.build_export(data["run_id"])
         print(f"{data['run_id']}\t{export_path}")
         return 0

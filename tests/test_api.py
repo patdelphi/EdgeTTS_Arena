@@ -196,3 +196,48 @@ def test_concurrent_benchmark_reports_pressure_execution_plan(tmp_path) -> None:
     assert data["requested_cpu_threads_per_model"] == 64
     assert data["total_threads_budget"] <= data["cpu_threads_per_model"] * 2
     assert data["resource_warnings"]
+
+
+def test_residency_endpoint_reports_default_policy(tmp_path) -> None:
+    client = make_client(tmp_path)
+    response = client.get("/api/v1/residency")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 200
+    data = body["data"]
+    assert data["mode"] == "eager"
+    assert data["memory_aware"] is True
+    assert data["resident_memory_budget_mb"] == 4096
+    assert data["residents"] == []
+    assert data["recent_evictions"] == []
+
+
+def test_residency_endpoint_applies_keep_warm_then_eager(tmp_path) -> None:
+    client = make_client(tmp_path)
+    put = client.put(
+        "/api/v1/residency",
+        json={"mode": "keep_warm", "memory_aware": False, "resident_memory_budget_mb": 2048},
+    )
+    assert put.status_code == 200
+    data = put.json()["data"]
+    assert data["mode"] == "keep_warm"
+    assert data["memory_aware"] is False
+    assert data["resident_memory_budget_mb"] == 2048
+
+    assert client.get("/api/v1/residency").json()["data"]["mode"] == "keep_warm"
+
+    back = client.put("/api/v1/residency", json={"mode": "eager"}).json()["data"]
+    assert back["mode"] == "eager"
+    assert back["memory_aware"] is True
+    assert back["resident_memory_budget_mb"] == 4096
+
+
+def test_residency_endpoint_rejects_out_of_range_budget(tmp_path) -> None:
+    client = make_client(tmp_path)
+    response = client.put(
+        "/api/v1/residency", json={"mode": "keep_warm", "resident_memory_budget_mb": 10}
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == 1001
+    assert body["error"]["type"] == "validation_error"
